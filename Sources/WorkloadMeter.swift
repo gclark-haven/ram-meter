@@ -1,0 +1,482 @@
+import AppKit
+import Charts
+import Foundation
+import SwiftUI
+
+enum Metric: String, CaseIterable {
+    case cpu = "CPU"
+    case ram = "RAM"
+}
+
+private enum RamBrand {
+    static let name = "Ram Meter"
+    static let mark: NSImage? = {
+        guard let url = Bundle.main.url(forResource: "RamMark", withExtension: "png"),
+              let image = NSImage(contentsOf: url) else { return nil }
+        image.size = NSSize(width: 18, height: 12)
+        image.isTemplate = true
+        return image
+    }()
+
+    static func color(_ hex: UInt32) -> Color {
+        Color(red: Double((hex >> 16) & 255) / 255,
+              green: Double((hex >> 8) & 255) / 255, blue: Double(hex & 255) / 255)
+    }
+
+    static func workload(_ group: Workload, dark: Bool) -> Color {
+        switch group {
+        case .docker: return color(dark ? 0xf58a73 : 0xac513d)
+        case .codex: return color(dark ? 0x59c7b6 : 0x287c72)
+        case .browsers: return color(dark ? 0xedac5d : 0x9c661f)
+        case .other: return color(dark ? 0x90acd7 : 0x56739f)
+        case .idle: return color(dark ? 0x9195a1 : 0x817e87)
+        }
+    }
+}
+
+private func percent(_ amount: Double) -> String {
+    amount.formatted(.percent.precision(.fractionLength(0...1)))
+}
+
+private func memory(_ bytes: UInt64) -> String {
+    if bytes == 0 { return "0 MiB" }
+    if bytes < 1 << 20 { return "<1 MiB" }
+    if bytes < 1 << 30 { return (Double(bytes) / Double(1 << 20)).formatted(.number.precision(.fractionLength(0))) + " MiB" }
+    return (Double(bytes) / Double(1 << 30)).formatted(.number.precision(.fractionLength(1))) + " GiB"
+}
+
+struct Dashboard: View {
+    let host: HostSnapshot?
+    let guest: GuestSnapshot?
+    let ended: [String: Monitor.EndedJob]
+    @Binding var metric: Metric
+    @Binding var expanded: Workload?
+    var onQuit: () -> Void
+    @State private var trackingCopyStatus: String?
+    @Environment(\.colorScheme) private var colorScheme
+    private var dark: Bool { colorScheme == .dark }
+
+    private var hostStale: Bool {
+        host.map { Date().timeIntervalSince($0.date) > 6 } ?? false
+    }
+
+    private var guestStale: Bool {
+        guest.map { Date().timeIntervalSince($0.date) > 15 } ?? false
+    }
+
+    private var visible: [Workload] {
+        metric == .cpu ? Workload.allCases : Workload.allCases.filter { $0 != .idle }
+    }
+
+    private func amount(_ value: Measurement) -> Double {
+        metric == .cpu ? value.cpu : Double(value.bytes)
+    }
+
+    private func valueText(_ value: Measurement?) -> String {
+        guard let value else { return "—" }
+        if metric == .ram { return memory(value.bytes) }
+        return host?.cpuBreakdown == true ? percent(value.cpu) : "—"
+    }
+
+    private var guestRows: [GuestReading] { guest?.rows ?? [] }
+    private var runCount: Int { Set(guestRows.compactMap { $0.job?.key }).count }
+    private var chatCount: Int { host?.details["codex"]?.filter { $0.id != "shared" }.count ?? 0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                HStack(spacing: 7) {
+                    if let mark = RamBrand.mark {
+                        Image(nsImage: mark)
+                            .foregroundStyle(RamBrand.color(dark ? 0xffa48f : 0x9b4938))
+                            .frame(width: 26, height: 24)
+                            .background(RamBrand.color(dark ? 0x46363b : 0xf0e2d8),
+                                        in: RoundedRectangle(cornerRadius: 6))
+                            .accessibilityHidden(true)
+                    }
+                    Text(RamBrand.name).font(.headline)
+                }
+                Spacer()
+                if hostStale {
+                    Label("Stale", systemImage: "clock").foregroundStyle(.orange)
+                        .accessibilityLabel("Stale Mac measurements")
+                } else if let host {
+                    Text(host.date.formatted(date: .omitted, time: .standard))
+                } else {
+                    Text("Collecting")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            VStack(spacing: 8) {
+                Picker("Resource metric", selection: $metric) {
+                    ForEach(Metric.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                overview
+            }
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity)
+            .background(RamBrand.color(dark ? 0x302d2e : 0xf2e8de),
+                        in: RoundedRectangle(cornerRadius: 12))
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("Workload")
+                    Spacer()
+                    Text(metric == .cpu ? "Share of Mac CPU" : "Process RAM").padding(.trailing, 20)
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+                .padding(.horizontal, 6)
+                .padding(.bottom, 6)
+                Divider()
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(visible) { group in
+                            groupRow(group)
+                            if expanded == group {
+                                if group == .docker { dockerDetail }
+                                else { processDetails(group) }
+                            }
+                            Divider()
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(height: expanded == nil ? 199 : 292)
+            }
+
+            HStack(alignment: .center) {
+                Text(footer).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 12)
+                Button("Quit", action: onQuit)
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Quit Ram Meter")
+            }
+        }
+        .padding(15)
+        .frame(width: 440)
+        .onExitCommand {
+            if expanded != nil { expanded = nil }
+            else { NSApp.keyWindow?.close() }
+        }
+    }
+
+    private var overview: some View {
+        VStack(spacing: 5) {
+            ZStack {
+                Circle().stroke(.quaternary, lineWidth: 12).padding(6)
+                if let host {
+                    if metric == .cpu, let busy = host.busy, !host.cpuBreakdown {
+                        donut([(.other, busy), (.idle, 1 - busy)])
+                    } else if metric == .ram || host.cpuBreakdown {
+                        donut(visible.compactMap { group in
+                            guard let value = host.groups[group.id], amount(value) > 0 else { return nil }
+                            return (group, amount(value))
+                        })
+                    }
+                }
+                VStack(spacing: 2) {
+                    Text(totalValue)
+                        .font(.system(size: 25, weight: .semibold))
+                        .monospacedDigit()
+                    Text(metric == .cpu ? "Mac CPU busy" : "Process footprint")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            .frame(width: 130, height: 130)
+            Text(overviewNote)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 1)
+    }
+
+    private func donut(_ slices: [(Workload, Double)]) -> some View {
+        Chart(slices, id: \.0.id) { group, value in
+            SectorMark(angle: .value("Share", value), innerRadius: .ratio(0.81), angularInset: 0.9)
+                .foregroundStyle(RamBrand.workload(group, dark: dark))
+        }
+        .chartLegend(.hidden)
+        .accessibilityHidden(true)
+    }
+
+    private var totalValue: String {
+        guard let host else { return "—" }
+        if metric == .ram { return host.processBytes > 0 ? memory(host.processBytes) : "—" }
+        return host.busy.map(percent) ?? "—"
+    }
+
+    private var overviewNote: String {
+        if metric == .ram {
+            return "Share of measured Mac processes"
+        }
+        guard let host, host.busy != nil else { return "Collecting CPU samples" }
+        if !host.cpuBreakdown { return "Waiting for a consistent CPU breakdown" }
+        return "Whole Mac · latest sampling interval"
+    }
+
+    private var footer: String {
+        guard let host else { return "This Mac" }
+        if metric == .cpu { return "\(host.cores) logical cores · This Mac" }
+        let pressure = host.memoryPressure.map { "Pressure: " + $0 } ?? "Pressure unavailable"
+        let coverage = host.missingProcesses == 0 ? "" : " · Partial process coverage"
+        return memory(host.installedBytes) + " installed · " + pressure + coverage
+    }
+
+    private func groupRow(_ group: Workload) -> some View {
+        Group {
+            if group == .idle {
+                groupLabel(group)
+            } else {
+                Button {
+                    expanded = expanded == group ? nil : group
+                } label: {
+                    groupLabel(group)
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(expanded == group ? "Hide workload details" : "Show workload details")
+                .accessibilityValue(expanded == group ? "Expanded" : "Collapsed")
+            }
+        }
+    }
+
+    private func groupLabel(_ group: Workload) -> some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 2.5)
+                .fill(RamBrand.workload(group, dark: dark)).frame(width: 9, height: 9)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(group.name).fontWeight(.semibold)
+                if let text = subtitle(group) {
+                    Text(text).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 10)
+            Text(valueText(host?.groups[group.id])).monospacedDigit().fontWeight(.medium)
+            Image(systemName: expanded == group ? "chevron.down" : "chevron.right")
+                .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
+                .frame(width: 12)
+                .opacity(group == .idle ? 0 : 1)
+                .accessibilityHidden(true)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .frame(minHeight: 36)
+        .contentShape(Rectangle())
+        .background(expanded == group ? Color.primary.opacity(0.06) : .clear,
+                    in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    private func subtitle(_ group: Workload) -> String? {
+        switch group {
+        case .codex:
+            if host == nil { return nil }
+            if chatCount == 0 { return "No registered chat work" }
+            return chatCount == 1 ? "1 chat with tracked work" : "\(chatCount) chats with tracked work"
+        case .docker:
+            if guest == nil { return "Collecting local CI readings" }
+            if guest?.configured == false { return "CI runners not configured" }
+            if guest?.rows == nil || guestStale { return "Run readings unavailable" }
+            if runCount == 0 { return "No labeled runs in this sample" }
+            return runCount == 1 ? "1 labeled local run" : "\(runCount) labeled local runs"
+        default: return nil
+        }
+    }
+
+    private func processDetails(_ group: Workload) -> some View {
+        let rows = (host?.details[group.id] ?? []).sorted { lhs, rhs in
+            let a = amount(lhs.value), b = amount(rhs.value)
+            return a == b ? lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending : a > b
+        }
+        return VStack(alignment: .leading, spacing: 0) {
+            if rows.isEmpty {
+                detailLine(host == nil ? "Collecting process samples" : "No readable processes", value: nil)
+            }
+            ForEach(rows) { row in
+                detailLine(row.name, note: row.note, value: valueText(row.value))
+            }
+                if group == .codex {
+                    HStack {
+                        Text(trackingCopyStatus ?? "Track a command from its Codex chat.")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Copy command prefix") { copyTrackingPrefix() }
+                            .buttonStyle(.borderless)
+                    }
+                    .font(.caption)
+                    .padding(.vertical, 7)
+                }
+        }
+        .padding(.leading, 23)
+        .padding(.trailing, 20)
+    }
+
+    private func copyTrackingPrefix() {
+        guard let path = Bundle.main.executableURL?.path else { return }
+        let quoted = "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        NSPasteboard.general.clearContents()
+        let copied = NSPasteboard.general.setString(quoted + " --track -- ", forType: .string)
+        let status = copied ? "Copied. Add the command after --." : "Couldn’t copy the command prefix."
+        trackingCopyStatus = status
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: status, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+    }
+
+    private var dockerDetail: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Guest usage inside Docker. The Mac total already includes the VM.")
+                .font(.caption2).foregroundStyle(.secondary)
+                .padding(.vertical, 5)
+            if guest?.configured == false {
+                detailLine("CI runners not configured", note: "Add runners.json to the Ram Meter support folder.", value: nil)
+            } else if guest?.rows == nil || guestStale {
+                detailLine(guest == nil ? "Collecting runner samples" : "Runner readings unavailable", value: nil)
+            } else {
+                let labeled = guestRows.filter { $0.job != nil }
+                let grouped = Dictionary(grouping: labeled) { $0.job!.key }
+                ForEach(grouped.keys.sorted(), id: \.self) { key in
+                    if let rows = grouped[key], let job = rows.first?.job {
+                        detailLine(job.name, note: "Attempt " + job.attempt + " · " + runnerCount(rows),
+                                   value: guestValue(rows))
+                    }
+                }
+                ForEach(guestRows.filter { $0.job == nil && !$0.idle }, id: \.id) { row in
+                    detailLine("Runner activity", note: row.runner + " · Run identity unavailable",
+                               value: guestValue([row]))
+                }
+                if grouped.isEmpty && guestRows.allSatisfy(\.idle) {
+                    detailLine("No local job identified", value: nil)
+                }
+                ForEach(ended.keys.sorted(), id: \.self) { key in
+                    if let entry = ended[key], let job = entry.rows.first?.job,
+                       Date().timeIntervalSince(entry.date) < 30 {
+                        detailLine(job.name, note: "Ended · Last sample", value: guestValue(entry.rows))
+                    }
+                }
+            }
+        }
+        .padding(.leading, 23)
+        .padding(.trailing, 20)
+    }
+
+    private func runnerCount(_ rows: [GuestReading]) -> String {
+        rows.count == 1 ? "1 runner" : "\(rows.count) runners"
+    }
+
+    private func guestValue(_ rows: [GuestReading]) -> String {
+        if metric == .ram { return memory(rows.reduce(0) { $0 + $1.bytes }) }
+        let cores = rows.reduce(0) { $0 + $1.cpu }
+        return cores.formatted(.number.precision(.fractionLength(2))) + " cores"
+    }
+
+    private func detailLine(_ name: String, note: String? = nil, value: String?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name).lineLimit(2)
+                if let note {
+                    Text(note).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+            Spacer(minLength: 5)
+            if let value { Text(value).monospacedDigit().fontWeight(.medium) }
+        }
+        .font(.caption)
+        .padding(.vertical, 5)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+@main
+struct WorkloadMeterApp: App {
+    @StateObject private var monitor: Monitor
+    @AppStorage("metric") private var metric: Metric = .cpu
+
+    init() {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments.first == "--track" { Registration.launch(Array(arguments.dropFirst())) }
+        if arguments.first == "--read-live" { Self.readLive(includeGuest: arguments.contains("--ci")) }
+        if arguments.first == "--render" { Self.render(arguments) }
+        let meter = Monitor()
+        _monitor = StateObject(wrappedValue: meter)
+        DispatchQueue.main.async { meter.start() }
+    }
+
+    var body: some Scene {
+        MenuBarExtra {
+            Dashboard(host: monitor.host, guest: monitor.guest, ended: monitor.endedJobs,
+                      metric: $metric, expanded: $monitor.expanded) { NSApp.terminate(nil) }
+                .onAppear { monitor.setShowing(true) }
+                .onDisappear { monitor.setShowing(false) }
+        } label: {
+            HStack(spacing: 4) {
+                if let mark = RamBrand.mark {
+                    Image(nsImage: mark).accessibilityHidden(true)
+                } else {
+                    Image(systemName: "chart.pie").accessibilityHidden(true)
+                }
+                if let busy = monitor.host?.busy, monitor.host.map({ Date().timeIntervalSince($0.date) < 15 }) == true {
+                    Text(busy.formatted(.percent.precision(.fractionLength(0))))
+                }
+            }
+            .accessibilityLabel(statusLabel)
+            .help(statusLabel)
+        }
+        .menuBarExtraStyle(.window)
+    }
+
+    private var statusLabel: String {
+        guard let host = monitor.host, let busy = host.busy, Date().timeIntervalSince(host.date) < 15 else {
+            return RamBrand.name
+        }
+        return RamBrand.name + ", Mac CPU " + busy.formatted(.percent.precision(.fractionLength(0)))
+    }
+
+    private static func snapshot() -> HostSnapshot {
+        let sampler = HostSampler()
+        _ = sampler.sample()
+        Thread.sleep(forTimeInterval: 2)
+        return sampler.sample()
+    }
+
+    private static func readLive(includeGuest: Bool) -> Never {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        struct Report: Codable {
+            let host: HostSnapshot
+            let guest: [GuestReading]?
+        }
+        let report = Report(host: snapshot(), guest: includeGuest ? RunnerSampler().sample().rows : nil)
+        guard let data = try? encoder.encode(report) else { exit(1) }
+        FileHandle.standardOutput.write(data)
+        exit(0)
+    }
+
+    private static func render(_ arguments: [String]) -> Never {
+        guard arguments.count == 2 else { exit(64) }
+        _ = NSApplication.shared
+        let ram = arguments[1].contains("-ram")
+        let host = snapshot()
+        let guest = ram ? RunnerSampler().sample() : nil
+        let view = Dashboard(host: host, guest: guest, ended: [:],
+                             metric: .constant(ram ? .ram : .cpu), expanded: .constant(ram ? .docker : .codex),
+                             onQuit: {})
+            .padding(4).background(.regularMaterial)
+            .environment(\.colorScheme, ram ? .dark : .light)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 2
+        guard let image = renderer.nsImage, let tiff = image.tiffRepresentation,
+              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { exit(1) }
+        do { try png.write(to: URL(fileURLWithPath: arguments[1])) } catch { exit(1) }
+        exit(0)
+    }
+}

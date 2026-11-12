@@ -1,0 +1,9 @@
+{
+  "runners": [
+    {
+      "container": "example-actions-runner",
+      "runner": "example-mac-runner",
+      "repository": "example-owner/example-repo"
+    }
+  ]
+}
