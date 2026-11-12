@@ -2,9 +2,15 @@
 
 **AI-generated documentation.**
 
-Use the menu bar for a quick CPU and RAM reading. Open the popover when you want to see which workloads are using those resources.
+## Agentic setup
 
-## Install Ram Meter
+Use this checklist when an agent is installing Ram Meter for someone. It requires macOS 14 or later. Start with the [latest release](https://github.com/gclark-haven/ram-meter/releases/latest).
+
+1. Download the DMG and its matching `.sha256` file from the same release into a temporary folder. In that folder, run `shasum -a 256 -c Ram-Meter-v1.2.0.dmg.sha256` with the actual checksum filename. Continue only if the result is **OK**.
+2. Mount the DMG with `hdiutil attach -readonly -nobrowse "<downloaded DMG>"`. Confirm the mounted volume contains `Ram Meter.app`. Copy it to `/Applications/Ram Meter.app`, or to `~/Applications/Ram Meter.app` if the system Applications folder is unavailable. If Ram Meter is already installed, check its version and confirm the intended update with the person before replacing it.
+3. Detach the mounted volume. Run `open "<installed app path>"` and confirm the menu bar shows the ram, **CPU %**, then **RAM used in GiB**. If macOS blocks the launch, hand the first-launch decision to the person using the Mac. [First-launch steps](#if-macos-blocks-the-first-launch)
+
+## Human setup
 
 1. On the [latest release page](https://github.com/gclark-haven/ram-meter/releases/latest), download the `.dmg` under **Assets**.
 2. Open the disk image and drag **Ram Meter** to **Applications**.

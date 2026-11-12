@@ -8,9 +8,8 @@ See what is using CPU and RAM on your Mac. Click the ram in the menu bar to comp
 
 **[Download the DMG](https://github.com/gclark-haven/ram-meter/releases/latest)** · macOS 14 or later · Apple silicon and Intel
 
-1. Under **Assets**, download and open the `.dmg`.
-2. Drag **Ram Meter** into **Applications**, then open it there.
-3. Click the ram in the menu bar. You’ll see **CPU %** followed by **RAM used in GiB**.
+- [Agentic setup](SETUP.md#agentic-setup)
+- [Human setup](SETUP.md#human-setup)
 
 The download is ad hoc signed and has no Apple notarization. If macOS blocks the first launch, follow the [first launch steps](SETUP.md#if-macos-blocks-the-first-launch).
 
