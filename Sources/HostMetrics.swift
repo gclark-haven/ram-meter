@@ -55,6 +55,7 @@ struct HostSnapshot: Codable {
     let details: [String: [WorkloadRow]]
     let processBytes: UInt64
     let installedBytes: UInt64
+    let usedMemoryBytes: UInt64?
     let memoryPressure: String?
     let missingProcesses: Int
     let cores: Int
@@ -152,6 +153,26 @@ final class HostSampler {
         }
     }
 
+    private func usedMemoryBytes() -> UInt64? {
+        var info = vm_statistics64()
+        let words = MemoryLayout.size(ofValue: info) / MemoryLayout<integer_t>.size
+        var count = mach_msg_type_number_t(words)
+        let host = mach_host_self()
+        defer { mach_port_deallocate(mach_task_self_, host) }
+        let status = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: words) {
+                host_statistics64(host, HOST_VM_INFO64, $0, &count)
+            }
+        }
+        guard status == KERN_SUCCESS, count >= words else { return nil }
+        // Count anonymous memory, wired pages and physical compressor storage.
+        // Exclude purgeable anonymous pages and avoid counting file caches.
+        let anonymous = UInt64(info.internal_page_count) -
+            UInt64(min(info.internal_page_count, info.purgeable_count))
+        let pages = anonymous + UInt64(info.wire_count) + UInt64(info.compressor_page_count)
+        return min(pages * UInt64(vm_kernel_page_size), hardware.physicalMemory)
+    }
+
     func sample() -> HostSnapshot {
         let now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
         let ticks = hostTicks()
@@ -220,7 +241,8 @@ final class HostSampler {
                             groups: Dictionary(uniqueKeysWithValues: groups.map { ($0.key.rawValue, $0.value) }),
                             details: Dictionary(uniqueKeysWithValues: details.map { ($0.key.rawValue, Array($0.value.values)) }),
                             processBytes: groups.values.reduce(0) { $0 + $1.bytes },
-                            installedBytes: hardware.physicalMemory, memoryPressure: pressure(),
+                            installedBytes: hardware.physicalMemory, usedMemoryBytes: usedMemoryBytes(),
+                            memoryPressure: pressure(),
                             missingProcesses: denied, cores: coreCount)
     }
 

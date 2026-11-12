@@ -30,11 +30,20 @@ for size in 16 32 128 256 512; do
   /usr/bin/sips -z "$((size * 2))" "$((size * 2))" "$temporary/icon.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 /usr/bin/iconutil -c icns "$iconset" -o "$resources/RamMeter.icns"
-/usr/bin/swiftc -O -swift-version 5 \
-  -target "$(/usr/bin/uname -m)-apple-macosx14.0" \
-  "$source_directory/Sources/HostMetrics.swift" "$source_directory/Sources/Registration.swift" \
-  "$source_directory/Sources/Monitor.swift" "$source_directory/Sources/WorkloadMeter.swift" \
-  -o "$bundle/Contents/MacOS/WorkloadMeter"
+compile_meter() {
+  /usr/bin/swiftc -O -swift-version 5 -target "$1-apple-macosx14.0" \
+    "$source_directory/Sources/HostMetrics.swift" "$source_directory/Sources/Registration.swift" \
+    "$source_directory/Sources/Monitor.swift" "$source_directory/Sources/WorkloadMeter.swift" \
+    -o "$2"
+}
+executable="$bundle/Contents/MacOS/WorkloadMeter"
+if [[ ${RAM_METER_UNIVERSAL:-0} == 1 ]]; then
+  compile_meter arm64 "$temporary/arm64"
+  compile_meter x86_64 "$temporary/x86_64"
+  /usr/bin/lipo -create "$temporary/arm64" "$temporary/x86_64" -output "$executable"
+else
+  compile_meter "$(/usr/bin/uname -m)" "$executable"
+fi
 /usr/bin/codesign --sign - --timestamp=none "$bundle"
 /usr/bin/codesign --verify --strict "$bundle"
 /bin/mv -n "$bundle" "$destination"

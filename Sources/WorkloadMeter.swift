@@ -424,9 +424,7 @@ struct WorkloadMeterApp: App {
                 } else {
                     Image(systemName: "chart.pie").accessibilityHidden(true)
                 }
-                if let busy = monitor.host?.busy, monitor.host.map({ Date().timeIntervalSince($0.date) < 15 }) == true {
-                    Text(busy.formatted(.percent.precision(.fractionLength(0))))
-                }
+                Text(statusText).monospacedDigit()
             }
             .accessibilityLabel(statusLabel)
             .help(statusLabel)
@@ -434,11 +432,27 @@ struct WorkloadMeterApp: App {
         .menuBarExtraStyle(.window)
     }
 
-    private var statusLabel: String {
-        guard let host = monitor.host, let busy = host.busy, Date().timeIntervalSince(host.date) < 15 else {
-            return RamBrand.name
+    private var freshHost: HostSnapshot? {
+        monitor.host.flatMap { Date().timeIntervalSince($0.date) < 15 ? $0 : nil }
+    }
+
+    private var cpuStatus: String? {
+        freshHost?.busy?.formatted(.percent.precision(.fractionLength(0)))
+    }
+
+    private var ramStatus: String? {
+        freshHost?.usedMemoryBytes.map {
+            (Double($0) / Double(1 << 30)).formatted(.number.precision(.fractionLength(1))) + " GiB"
         }
-        return RamBrand.name + ", Mac CPU " + busy.formatted(.percent.precision(.fractionLength(0)))
+    }
+
+    private var statusText: String {
+        "CPU " + (cpuStatus ?? "—") + " · RAM " + (ramStatus ?? "—")
+    }
+
+    private var statusLabel: String {
+        RamBrand.name + ", Mac CPU " + (cpuStatus ?? "unavailable") +
+            ", Mac RAM used " + (ramStatus ?? "unavailable")
     }
 
     private static func snapshot() -> HostSnapshot {
