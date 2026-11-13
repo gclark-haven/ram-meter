@@ -6,15 +6,15 @@
 
 Use this checklist when an agent is installing Ram Meter for someone. It requires macOS 14 or later. Start with the [latest release](https://github.com/gclark-haven/ram-meter/releases/latest).
 
-1. Download the DMG and its matching `.sha256` file from the same release into a temporary folder. In that folder, run `shasum -a 256 -c Ram-Meter-v1.2.0.dmg.sha256` with the actual checksum filename. Continue only if the result is **OK**.
+1. Download the DMG and its matching `.sha256` file from the same release into a temporary folder. In that folder, run `shasum -a 256 -c` followed by the checksum filename. Continue only if the result is **OK**.
 2. Mount the DMG with `hdiutil attach -readonly -nobrowse "<downloaded DMG>"`. Confirm the mounted volume contains `Ram Meter.app`. Copy it to `/Applications/Ram Meter.app`, or to `~/Applications/Ram Meter.app` if the system Applications folder is unavailable. If Ram Meter is already installed, check its version and confirm the intended update with the person before replacing it.
-3. Detach the mounted volume. Run `open "<installed app path>"` and confirm the menu bar shows the ram, **CPU %**, then **RAM used in GiB**. If macOS blocks the launch, hand the first-launch decision to the person using the Mac. [First-launch steps](#if-macos-blocks-the-first-launch)
+3. Detach the mounted volume. Run `open "<installed app path>"` and confirm the menu bar shows the ram and **RAM used as a percentage**. Click it to check the **CPU** and **RAM** views. If macOS blocks the launch, hand the first-launch decision to the person using the Mac. [First-launch steps](#if-macos-blocks-the-first-launch)
 
 ## Human setup
 
 1. On the [latest release page](https://github.com/gclark-haven/ram-meter/releases/latest), download the `.dmg` under **Assets**.
 2. Open the disk image and drag **Ram Meter** to **Applications**.
-3. Open **Ram Meter** from **Applications**. Look for the ram beside **CPU** and **RAM** in the menu bar.
+3. Open **Ram Meter** from **Applications**. Look for the ram and **RAM percentage** in the menu bar. Click it to see the **CPU** and **RAM** charts.
 
 The disk image includes an app for Apple silicon and Intel Macs running macOS 14 or later.
 
@@ -24,11 +24,16 @@ This download is ad hoc signed and has no Apple notarization. After trying to op
 
 ## What the numbers mean
 
-- **Menu bar CPU** shows busy capacity as a percentage across the whole Mac.
-- **Menu bar RAM** estimates physical memory in use in GiB, including wired and compressed memory. File cache is excluded.
+- **Menu bar RAM** shows the estimated share of installed memory in use. The estimate includes wired and compressed memory and excludes file cache.
 - **Popover charts** show available capacity in the center. CPU availability is idle capacity. RAM availability is estimated from installed RAM minus the same used-memory estimate shown in the menu bar.
-- **RAM workload rows** show process footprints. Shared resources can be counted in more than one footprint.
+- **RAM workload rows** show process footprints. Shared resources can be counted in more than one footprint. Node servers with a detectable TCP listener, iOS Simulator, and Android Emulator get separate rows while running. A detected development process goes into its own group even if Codex launched it.
 - **Docker run details** show guest usage inside the VM. The whole-Mac total already includes the VM.
+
+## See technical stats
+
+Open **Stats for nerds** below the workload list. **Busy core equivalents** estimates how many logical CPUs would be fully occupied by the sampled load. For example, 25% CPU on a Mac with 8 logical CPUs is 2 busy core equivalents.
+
+**Page-ins** and **Page-outs** show virtual memory activity per second. They measure paging, while RAM hardware read/write bandwidth is a separate metric.
 
 ## Track a Codex command
 

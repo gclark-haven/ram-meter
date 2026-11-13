@@ -16,7 +16,7 @@ struct ProcessReading {
 }
 
 enum Workload: String, CaseIterable, Identifiable {
-    case docker, codex, browsers, other, idle
+    case docker, codex, browsers, nodeServers, iOSSimulator, androidEmulator, other, idle
 
     var id: String { rawValue }
     var name: String {
@@ -24,6 +24,9 @@ enum Workload: String, CaseIterable, Identifiable {
         case .docker: return "Docker VM"
         case .codex: return "Codex"
         case .browsers: return "Browsers"
+        case .nodeServers: return "Node servers"
+        case .iOSSimulator: return "iOS Simulator"
+        case .androidEmulator: return "Android Emulator"
         case .other: return "Other apps & macOS"
         case .idle: return "Idle"
         }
@@ -59,6 +62,13 @@ struct HostSnapshot: Codable {
     let memoryPressure: String?
     let missingProcesses: Int
     let cores: Int
+    let cpuUser: Double?
+    let cpuSystem: Double?
+    let physicalCores: Int?
+    let wiredBytes: UInt64?
+    let compressedBytes: UInt64?
+    let pageInBytesPerSecond: Double?
+    let pageOutBytesPerSecond: Double?
 }
 
 func processUsage(_ pid: pid_t) -> rusage_info_v0? {
@@ -81,13 +91,22 @@ final class HostSampler {
     private let hardware = ProcessInfo.processInfo
     private var timebase = mach_timebase_info_data_t()
     private var previousTicks: [UInt32]?
+    private var previousMemory: vm_statistics64?
     private var previousTime: UInt64?
     private var previousProcesses: [ProcessKey: ProcessReading] = [:]
+
+    private let physicalCores: Int? = {
+        var value: Int32 = 0
+        var size = MemoryLayout.size(ofValue: value)
+        guard sysctlbyname("hw.physicalcpu", &value, &size, nil, 0) == 0, value > 0 else { return nil }
+        return Int(value)
+    }()
 
     init() { mach_timebase_info(&timebase) }
 
     func reset() {
         previousTicks = nil
+        previousMemory = nil
         previousTime = nil
         previousProcesses = [:]
     }
@@ -121,12 +140,9 @@ final class HostSampler {
             guard let info = processBSDInfo(pid) else { denied += 1; continue }
             guard let usage = processUsage(pid) else { denied += 1; continue }
             let key = ProcessKey(pid: pid, start: usage.ri_proc_start_abstime)
-            // Reuse a path for an established process. The registration wrapper
-            // owns its identity across exec, where the original path is immaterial.
             let executable: String
-            if let old = previousProcesses[key], !old.executable.isEmpty {
-                executable = old.executable
-            } else if proc_pidpath(pid, &path, UInt32(path.count)) > 0 ||
+            // exec can change the executable without changing PID or start time.
+            if proc_pidpath(pid, &path, UInt32(path.count)) > 0 ||
                         proc_name(pid, &path, UInt32(path.count)) > 0 {
                 executable = String(cString: path)
             } else {
@@ -153,7 +169,7 @@ final class HostSampler {
         }
     }
 
-    private func usedMemoryBytes() -> UInt64? {
+    private func memoryStatistics() -> vm_statistics64? {
         var info = vm_statistics64()
         let words = MemoryLayout.size(ofValue: info) / MemoryLayout<integer_t>.size
         var count = mach_msg_type_number_t(words)
@@ -164,7 +180,11 @@ final class HostSampler {
                 host_statistics64(host, HOST_VM_INFO64, $0, &count)
             }
         }
-        guard status == KERN_SUCCESS, count >= words else { return nil }
+        guard status == KERN_SUCCESS, count >= words, info.wire_count > 0 else { return nil }
+        return info
+    }
+
+    private func usedMemoryBytes(_ info: vm_statistics64) -> UInt64 {
         // Count anonymous memory, wired pages and physical compressor storage.
         // Exclude purgeable anonymous pages and avoid counting file caches.
         let anonymous = UInt64(info.internal_page_count) -
@@ -173,9 +193,17 @@ final class HostSampler {
         return min(pages * UInt64(vm_kernel_page_size), hardware.physicalMemory)
     }
 
+    private func pagingRate(_ current: UInt64?, _ previous: UInt64?, elapsed: Double) -> Double? {
+        guard let current, let previous, current >= previous, elapsed > 0, elapsed < 16_000_000_000 else {
+            return nil
+        }
+        return Double(current - previous) * Double(vm_kernel_page_size) * 1_000_000_000 / elapsed
+    }
+
     func sample() -> HostSnapshot {
         let now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
         let ticks = hostTicks()
+        let memory = memoryStatistics()
         let (processes, denied) = readProcesses()
         let table = Dictionary(uniqueKeysWithValues: processes.map { ($0.key.pid, $0) })
         let registrations = Registration.activeProcesses(table)
@@ -183,18 +211,25 @@ final class HostSampler {
         let dockerVM = dockerVMs.count == 1 && processes.contains(where: {
             $0.executable.hasSuffix("/Docker.app/Contents/MacOS/com.docker.virtualization")
         }) ? dockerVMs.first?.key : nil
+        let simulatorRoots = iOSSimulatorRoots(processes, in: table)
         let classifications = Dictionary(uniqueKeysWithValues: processes.map {
-            ($0.key, classify($0.executable, dockerVM: $0.key == dockerVM))
+            ($0.key, classify($0, dockerVM: $0.key == dockerVM, simulatorRoots: simulatorRoots))
         })
         let coreCount = max(1, hardware.activeProcessorCount)
         let elapsed = previousTime.map { now > $0 ? Double(now - $0) : 0 } ?? 0
         var busy: Double?
+        var cpuUser: Double?
+        var cpuSystem: Double?
         // Reset after sleep or a missed sampling interval.
         if elapsed > 0, elapsed < 16_000_000_000,
            let ticks, let previousTicks {
             let delta = zip(ticks, previousTicks).map { Double($0 &- $1) }
             let total = delta.reduce(0, +)
-            if total > 0 { busy = 1 - delta[Int(CPU_STATE_IDLE)] / total }
+            if total > 0 {
+                busy = 1 - delta[Int(CPU_STATE_IDLE)] / total
+                cpuUser = (delta[Int(CPU_STATE_USER)] + delta[Int(CPU_STATE_NICE)]) / total
+                cpuSystem = delta[Int(CPU_STATE_SYSTEM)] / total
+            }
         }
         var groups: [Workload: Measurement] = [:]
         var details: [Workload: [String: WorkloadRow]] = [:]
@@ -234,40 +269,66 @@ final class HostSampler {
             }
             groups[.idle] = Measurement(cpu: 1 - busy)
         }
+        let pageIn = pagingRate(memory?.pageins, previousMemory?.pageins, elapsed: elapsed)
+        let pageOut = pagingRate(memory?.pageouts, previousMemory?.pageouts, elapsed: elapsed)
         previousTicks = ticks
+        previousMemory = memory
         previousTime = now
         previousProcesses = Dictionary(uniqueKeysWithValues: processes.map { ($0.key, $0) })
         return HostSnapshot(date: Date(), busy: busy, cpuBreakdown: reconciled,
                             groups: Dictionary(uniqueKeysWithValues: groups.map { ($0.key.rawValue, $0.value) }),
                             details: Dictionary(uniqueKeysWithValues: details.map { ($0.key.rawValue, Array($0.value.values)) }),
                             processBytes: groups.values.reduce(0) { $0 + $1.bytes },
-                            installedBytes: hardware.physicalMemory, usedMemoryBytes: usedMemoryBytes(),
+                            installedBytes: hardware.physicalMemory, usedMemoryBytes: memory.map(usedMemoryBytes),
                             memoryPressure: pressure(),
-                            missingProcesses: denied, cores: coreCount)
+                            missingProcesses: denied, cores: coreCount,
+                            cpuUser: cpuUser, cpuSystem: cpuSystem, physicalCores: physicalCores,
+                            wiredBytes: memory.map { UInt64($0.wire_count) * UInt64(vm_kernel_page_size) },
+                            compressedBytes: memory.map { UInt64($0.compressor_page_count) * UInt64(vm_kernel_page_size) },
+                            pageInBytesPerSecond: pageIn, pageOutBytesPerSecond: pageOut)
     }
 
     private typealias Ownership = (Workload, String, String, String?)
 
     private func ownership(of process: ProcessReading, in table: [pid_t: ProcessReading],
                            registered: [ProcessKey: Registration], classifications: [ProcessKey: Ownership]) -> Ownership {
+        let own = classifications[process.key] ?? (.other, "unknown", "Unknown process", nil)
+        if own.0.isDevelopment { return own }
         var node = process
         var inheritedCodex = false
+        var registration: Registration?
         var visited = Set<pid_t>()
         while visited.insert(node.key.pid).inserted {
-            if node.uid == process.uid, let tag = registered[node.key] {
-                return (.codex, tag.chat, tag.name ?? "Chat " + tag.chat.suffix(8), "Tracked local work")
+            if node.uid == process.uid {
+                if own.0 == .other, let parent = classifications[node.key], parent.0.isDevelopment {
+                    return parent
+                }
+                if registration == nil { registration = registered[node.key] }
             }
             inheritedCodex = inheritedCodex || classifications[node.key]?.0 == .codex
             guard let parent = table[node.parent], parent.key.start <= node.key.start else { break }
             node = parent
         }
-        let own = classifications[process.key] ?? (.other, "unknown", "Unknown process", nil)
+        if let tag = registration {
+            return (.codex, tag.chat, tag.name ?? "Chat " + tag.chat.suffix(8), "Tracked local work")
+        }
         if own.0 != .other { return own }
         return inheritedCodex ? (.codex, "shared", "Shared Codex", nil) : own
     }
 
-    private func classify(_ path: String, dockerVM: Bool) -> Ownership {
+    private func classify(_ process: ProcessReading, dockerVM: Bool, simulatorRoots: Set<ProcessKey>) -> Ownership {
+        let path = process.executable
         let leaf = path.split(separator: "/").last.map(String.init) ?? "Unknown process"
+        if path.contains("/Simulator.app/") || isIOSRuntime(path) || simulatorRoots.contains(process.key) {
+            return (.iOSSimulator, "ios", "Simulator and device processes", nil)
+        }
+        if isAndroidEmulator(path) {
+            return (.androidEmulator, "android", "Android virtual device processes", nil)
+        }
+        if leaf == "node", process.uid == getuid(), hasListeningTCPSocket(process.key.pid) {
+            let id = String(process.key.pid)
+            return (.nodeServers, id, "Node server · PID " + id, "Listening for TCP connections")
+        }
         if path.contains("/Docker.app/") || dockerVM ||
             leaf == "com.docker.vmnetd" || leaf == "com.docker.socket" {
             return (.docker, "docker", "Docker VM & helpers", nil)
@@ -285,5 +346,60 @@ final class HostSampler {
         let bundle = path.components(separatedBy: "/").first { $0.hasSuffix(".app") }
         let name = bundle.map { String($0.dropLast(4)) } ?? leaf
         return (.other, name, name, nil)
+    }
+
+    private func isIOSRuntime(_ path: String) -> Bool {
+        path.contains("/CoreSimulator/") && path.contains("/iOS ") && path.contains(".simruntime/")
+    }
+
+    private func isAndroidEmulator(_ path: String) -> Bool {
+        if path.hasSuffix("/emulator/emulator") { return true }
+        return path.contains("/emulator/qemu/") &&
+            (path.split(separator: "/").last?.hasPrefix("qemu-system-") == true)
+    }
+
+    private func iOSSimulatorRoots(_ processes: [ProcessReading],
+                                   in table: [pid_t: ProcessReading]) -> Set<ProcessKey> {
+        var roots = Set<ProcessKey>()
+        for process in processes where isIOSRuntime(process.executable) {
+            var node = process
+            var visited = Set<ProcessKey>()
+            while visited.insert(node.key).inserted {
+                if node.executable.split(separator: "/").last == "launchd_sim" {
+                    roots.insert(node.key)
+                    break
+                }
+                guard let parent = table[node.parent], parent.key.start <= node.key.start else { break }
+                node = parent
+            }
+        }
+        return roots
+    }
+
+    private func hasListeningTCPSocket(_ pid: pid_t) -> Bool {
+        let wanted = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard wanted > 0 else { return false }
+        let stride = MemoryLayout<proc_fdinfo>.stride
+        var descriptors = [proc_fdinfo](repeating: proc_fdinfo(), count: min(4096, Int(wanted) / stride + 32))
+        let count = descriptors.withUnsafeMutableBytes {
+            Int(proc_pidinfo(pid, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count))) / stride
+        }
+        guard count > 0 else { return false }
+        for descriptor in descriptors.prefix(count) where descriptor.proc_fdtype == PROX_FDTYPE_SOCKET {
+            var info = socket_fdinfo()
+            let size = Int32(MemoryLayout.size(ofValue: info))
+            if proc_pidfdinfo(pid, descriptor.proc_fd, PROC_PIDFDSOCKETINFO, &info, size) == size,
+               info.psi.soi_kind == Int32(SOCKINFO_TCP),
+               info.psi.soi_proto.pri_tcp.tcpsi_state == TSI_S_LISTEN {
+                return true
+            }
+        }
+        return false
+    }
+}
+
+private extension Workload {
+    var isDevelopment: Bool {
+        self == .nodeServers || self == .iOSSimulator || self == .androidEmulator
     }
 }

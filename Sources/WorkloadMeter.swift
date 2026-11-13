@@ -28,6 +28,9 @@ private enum RamBrand {
         case .docker: return color(dark ? 0xf58a73 : 0xac513d)
         case .codex: return color(dark ? 0xc6a3f4 : 0x7450a6)
         case .browsers: return color(dark ? 0xedac5d : 0x9c661f)
+        case .nodeServers: return color(dark ? 0xd0dc70 : 0x61701c)
+        case .iOSSimulator: return color(dark ? 0xf0a3ce : 0xa04479)
+        case .androidEmulator: return color(dark ? 0x7bddf2 : 0x166b7e)
         case .other: return color(dark ? 0x90acd7 : 0x56739f)
         case .idle: return color(dark ? 0x78e1cb : 0x19766b)
         }
@@ -84,6 +87,7 @@ struct Dashboard: View {
     @Binding var expanded: Workload?
     var onQuit: () -> Void
     @State private var trackingCopyStatus: String?
+    @State private var showStats = false
     @Environment(\.colorScheme) private var colorScheme
     private var dark: Bool { colorScheme == .dark }
 
@@ -96,7 +100,13 @@ struct Dashboard: View {
     }
 
     private var visible: [Workload] {
-        Workload.allCases.filter { $0 != .idle }
+        Workload.allCases.filter {
+            switch $0 {
+            case .idle: return false
+            case .nodeServers, .iOSSimulator, .androidEmulator: return host?.groups[$0.id] != nil
+            default: return true
+            }
+        }
     }
 
     private var capacity: CapacityReading? {
@@ -201,7 +211,14 @@ struct Dashboard: View {
                     .padding(.horizontal, 4)
                 }
                 .scrollBounceBehavior(.basedOnSize)
-                .frame(height: expanded == nil ? 160 : 260)
+                .frame(height: showStats ? 150 : expanded == nil ? CGFloat(visible.count * 40) : 260)
+                if showStats {
+                    Text("Scroll for more workloads.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.top, 6)
+                }
                 if metric == .ram {
                     Text("Process footprints can overlap.")
                         .font(.caption2)
@@ -210,6 +227,12 @@ struct Dashboard: View {
                         .padding(.top, 6)
                 }
             }
+
+            DisclosureGroup("Stats for nerds", isExpanded: $showStats) {
+                nerdStats.padding(.top, 8)
+            }
+            .font(.subheadline)
+            .padding(.horizontal, 6)
 
             HStack(alignment: .center) {
                 Text(footer).font(.caption).foregroundStyle(.secondary)
@@ -222,10 +245,65 @@ struct Dashboard: View {
         }
         .padding(15)
         .frame(width: 440)
+        .onChange(of: visible) { _, groups in
+            if let expanded, !groups.contains(expanded) { self.expanded = nil }
+        }
         .onExitCommand {
-            if expanded != nil { expanded = nil }
+            if showStats { showStats = false }
+            else if expanded != nil { expanded = nil }
             else { NSApp.keyWindow?.close() }
         }
+    }
+
+    private var nerdStats: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("CPU").fontWeight(.semibold)
+                    stat("Busy core equivalents", host.flatMap { sample in
+                        sample.busy.map { busy in
+                            (busy * Double(sample.cores)).formatted(.number.precision(.fractionLength(1))) +
+                                " / " + sample.cores.formatted()
+                        }
+                    })
+                    stat("Physical cores", host?.physicalCores?.formatted())
+                    stat("User", host?.cpuUser.map(percent))
+                    stat("System", host?.cpuSystem.map(percent))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Memory").fontWeight(.semibold)
+                    stat("Wired", host?.wiredBytes.map(memory))
+                    stat("Compressed", host?.compressedBytes.map(memory))
+                    stat("Page-ins", pagingRateText(host?.pageInBytesPerSecond))
+                    stat("Page-outs", pagingRateText(host?.pageOutBytesPerSecond))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Text("Paging measures virtual memory activity.")
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption)
+        .padding(9)
+        .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func stat(_ name: String, _ value: String?) -> some View {
+        HStack(spacing: 5) {
+            Text(name).foregroundStyle(.secondary)
+            Spacer(minLength: 3)
+            Text(value ?? "—").monospacedDigit().fixedSize()
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func pagingRateText(_ rate: Double?) -> String? {
+        guard let rate else { return nil }
+        if rate == 0 { return "0 B/s" }
+        if rate < 1_024 { return "<1 KiB/s" }
+        let divisor: Double = rate < 1_048_576 ? 1_024 : 1_048_576
+        let value = (rate / divisor).formatted(.number.precision(.fractionLength(0...1)))
+        return value + (divisor == 1_024 ? " KiB/s" : " MiB/s")
     }
 
     private var overview: some View {
@@ -532,23 +610,18 @@ struct WorkloadMeterApp: App {
         monitor.host.flatMap { Date().timeIntervalSince($0.date) < 15 ? $0 : nil }
     }
 
-    private var cpuStatus: String? {
-        freshHost?.busy?.formatted(.percent.precision(.fractionLength(0)))
-    }
-
     private var ramStatus: String? {
-        freshHost?.usedMemoryBytes.map {
-            (Double($0) / Double(1 << 30)).formatted(.number.precision(.fractionLength(1))) + " GiB"
-        }
+        guard let host = freshHost, let used = host.usedMemoryBytes, host.installedBytes > 0 else { return nil }
+        return (Double(used) / Double(host.installedBytes))
+            .formatted(.percent.precision(.fractionLength(0)))
     }
 
     private var statusText: String {
-        "CPU " + (cpuStatus ?? "—") + " · RAM " + (ramStatus ?? "—")
+        "RAM " + (ramStatus ?? "—")
     }
 
     private var statusLabel: String {
-        RamBrand.name + ", Mac CPU " + (cpuStatus ?? "unavailable") +
-            ", Mac RAM used " + (ramStatus ?? "unavailable")
+        RamBrand.name + ", Mac RAM used " + (ramStatus ?? "unavailable")
     }
 
     private static func snapshot() -> HostSnapshot {

@@ -4,7 +4,7 @@
 
 <p><img src="Assets/app-icon.svg" width="96" alt="Ram Meter bighorn ram logo"></p>
 
-See what is using CPU and RAM on your Mac. Click the ram in the menu bar to compare Docker, Codex, browsers, and other apps.
+See RAM use at a glance. Click the ram in the menu bar to compare CPU and RAM usage across Docker, Codex, browsers, and other apps. Running Node servers, iOS simulators, and Android emulators get their own rows.
 
 **[Download the DMG](https://github.com/gclark-haven/ram-meter/releases/latest)** · macOS 14 or later · Apple silicon and Intel
 
