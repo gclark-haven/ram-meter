@@ -72,6 +72,9 @@ struct UsageHistoryChart: View {
     let history: UsageHistory
     let workloads: [Workload]
     let color: (Workload) -> Color
+    @State private var highlighted: Workload?
+
+    private let keyColumns = [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)]
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 2)) { _ in
@@ -90,15 +93,16 @@ struct UsageHistoryChart: View {
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
+                workloadKey
                 Chart {
-                    ForEach(workloads.indices, id: \.self) { i in
+                    ForEach(drawOrder, id: \.self) { i in
                         ForEach(series[i].indices, id: \.self) { j in
                             let segment = series[i][j]
                             ForEach(segment.indices, id: \.self) { k in
                                 let point = segment[k]
                                 band(point, start: point.lower, end: point.upper,
                                      series: "\(workloads[i].id)-\(j)", color: color(workloads[i]),
-                                     isolated: segment.count == 1)
+                                     isolated: segment.count == 1, workload: workloads[i])
                             }
                         }
                     }
@@ -123,9 +127,59 @@ struct UsageHistoryChart: View {
                 .chartLegend(.hidden)
                 .frame(height: 102)
                 .accessibilityRepresentation {
-                    Text(chartSummary(count: count))
+                    Text(chartSummary(count: count) + (highlighted.map { " Highlighting " + $0.name + "." } ?? ""))
                 }
             }
+        }
+    }
+
+    private var drawOrder: [Int] {
+        var order = Array(workloads.indices)
+        if metric == .ram, let highlighted, let index = workloads.firstIndex(of: highlighted) {
+            order.removeAll { $0 == index }
+            order.append(index)
+        }
+        return order
+    }
+
+    private var workloadKey: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Highlight a workload")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            LazyVGrid(columns: keyColumns, spacing: 4) {
+                ForEach(workloads) { workload in
+                    let selected = highlighted == workload
+                    Button {
+                        highlighted = selected ? nil : workload
+                    } label: {
+                        HStack(spacing: 6) {
+                            Capsule()
+                                .fill(color(workload))
+                                .frame(width: 14, height: metric == .ram ? 3 : 8)
+                                .accessibilityHidden(true)
+                            Text(workload.name)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                            Image(systemName: "checkmark")
+                                .opacity(selected ? 1 : 0)
+                                .accessibilityHidden(true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(selected ? color(workload) : nil)
+                    .accessibilityLabel(workload.name)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .accessibilityHint(selected ? "Show all workloads" : "Highlight this workload in the chart")
+                    .accessibilityIdentifier("chart-key-" + workload.id)
+                }
+            }
+        }
+        .onChange(of: metric) { _, _ in highlighted = nil }
+        .onChange(of: workloads) { _, available in
+            if let highlighted, !available.contains(highlighted) { self.highlighted = nil }
         }
     }
 
@@ -141,23 +195,25 @@ struct UsageHistoryChart: View {
 
     @ChartContentBuilder
     private func band(_ point: UsageHistory.Point, start: Double, end: Double,
-                      series: String, color: Color, isolated: Bool) -> some ChartContent {
+                      series: String, color: Color, isolated: Bool, workload: Workload) -> some ChartContent {
+        let dimmed = highlighted != nil && highlighted != workload
+        let selected = highlighted == workload
         if isolated && end > start {
             PointMark(x: .value("Seconds from now", point.time), y: .value("Share", end))
                 .symbolSize(16)
-                .foregroundStyle(color)
+                .foregroundStyle(color.opacity(dimmed ? 0.25 : 1))
         } else if !isolated {
             if metric == .cpu {
                 AreaMark(x: .value("Seconds from now", point.time),
                      yStart: .value("Lower share", start), yEnd: .value("Upper share", end),
                      series: .value("Series", series))
-                .foregroundStyle(color.opacity(0.48))
+                .foregroundStyle(color.opacity(dimmed ? 0.14 : selected ? 0.84 : 0.48))
             }
             if metric == .ram {
                 LineMark(x: .value("Seconds from now", point.time), y: .value("Share", end),
                      series: .value("Series", series))
-                .foregroundStyle(color)
-                .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                .foregroundStyle(color.opacity(dimmed ? 0.22 : 1))
+                .lineStyle(StrokeStyle(lineWidth: selected ? 2.8 : 1.5, lineCap: .round, lineJoin: .round))
             }
         }
     }
