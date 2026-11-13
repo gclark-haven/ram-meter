@@ -75,6 +75,7 @@ final class RunnerSampler {
 
 final class Monitor: ObservableObject {
     @Published private(set) var host: HostSnapshot?
+    private(set) var history = UsageHistory()
     @Published private(set) var guest: GuestSnapshot?
     @Published private(set) var endedJobs: [String: EndedJob] = [:]
     @Published var expanded: Workload?
@@ -107,6 +108,7 @@ final class Monitor: ObservableObject {
 
     private func wake() {
         generation += 1
+        history = UsageHistory()
         host = nil
         guest = nil
         endedJobs = [:]
@@ -137,11 +139,14 @@ final class Monitor: ObservableObject {
             measuringHost = true
             hostQueue.async { [weak self] in
                 guard let self else { return }
+                let time = ProcessInfo.processInfo.systemUptime
                 let snapshot = self.hostSampler.sample()
                 DispatchQueue.main.async {
                     self.measuringHost = false
-                    if self.generation == requestedGeneration { self.host = snapshot }
-                    else { self.poll() }
+                    if self.generation == requestedGeneration {
+                        self.history.append(UsageSample(host: snapshot, time: time))
+                        self.host = snapshot
+                    } else { self.poll() }
                 }
             }
         }

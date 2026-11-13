@@ -25,9 +25,16 @@ This download is ad hoc signed and has no Apple notarization. After trying to op
 ## What the numbers mean
 
 - **Menu bar RAM** shows the estimated share of installed memory in use. The estimate includes wired and compressed memory and excludes file cache.
-- **Popover charts** show available capacity in the center. CPU availability is idle capacity. RAM availability is estimated from installed RAM minus the same used-memory estimate shown in the menu bar.
+- **Pie** shows available capacity in the center. CPU availability is idle capacity. RAM availability is estimated from installed RAM minus the same used-memory estimate shown in the menu bar.
 - **RAM workload rows** show process footprints. Shared resources can be counted in more than one footprint. Node servers with a detectable TCP listener, iOS Simulator, and Android Emulator get separate rows while running. A detected development process goes into its own group even if Codex launched it.
 - **Docker run details** show guest usage inside the VM. The whole-Mac total already includes the VM.
+
+### Use History in the source build
+
+The current source build shows **CPU %**, then **RAM %** in the menu bar. Click the ram, choose **CPU** or **RAM**, then choose **History** to see the last 60 seconds. Switch back to **Pie** any time. Ram Meter remembers your choice.
+
+- **CPU History** shows System, User, and Idle shares of total Mac CPU. The graph stacks System and User. **Observed threads** counts threads from processes macOS lets Ram Meter read.
+- **RAM History** shows the share of installed RAM in use over time, plus current used, estimated available, and installed RAM in GiB.
 
 ## See technical stats
 

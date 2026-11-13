@@ -81,9 +81,11 @@ private func memory(_ bytes: UInt64) -> String {
 
 struct Dashboard: View {
     let host: HostSnapshot?
+    let history: UsageHistory
     let guest: GuestSnapshot?
     let ended: [String: Monitor.EndedJob]
     @Binding var metric: Metric
+    @Binding var chartMode: ChartViewMode
     @Binding var expanded: Workload?
     var onQuit: () -> Void
     @State private var trackingCopyStatus: String?
@@ -162,12 +164,18 @@ struct Dashboard: View {
             .foregroundStyle(.secondary)
 
             VStack(spacing: 8) {
-                Picker("Resource metric", selection: $metric) {
-                    ForEach(Metric.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                HStack(spacing: 10) {
+                    Picker("Resource metric", selection: $metric) {
+                        ForEach(Metric.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    Picker("Chart view", selection: $chartMode) {
+                        ForEach(ChartViewMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                overview
+                if chartMode == .pie { overview }
+                else { historyOverview }
             }
             .padding(12)
             .frame(maxWidth: .infinity)
@@ -253,6 +261,65 @@ struct Dashboard: View {
             else if expanded != nil { expanded = nil }
             else { NSApp.keyWindow?.close() }
         }
+    }
+
+    private var historyOverview: some View {
+        let systemColor = RamBrand.workload(.docker, dark: dark)
+        let userColor = RamBrand.workload(.other, dark: dark)
+        let ramColor = RamBrand.workload(.idle, dark: dark)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                if metric == .cpu {
+                    historyReading("System", host?.cpuSystem.map(percent), tint: systemColor)
+                    historyReading("User", host?.cpuUser.map(percent), tint: userColor)
+                    historyReading("Idle", host?.busy.map { percent(1 - $0) })
+                } else {
+                    historyReading("RAM used", capacity.map { capacityValue($0.used) }, tint: ramColor)
+                    historyReading("Est. available", capacity.map { capacityValue($0.available) })
+                    historyReading("Installed RAM", host.flatMap {
+                        $0.installedBytes > 0 ? capacityValue(Double($0.installedBytes)) : nil
+                    })
+                }
+            }
+            UsageHistoryChart(metric: metric, history: history, systemColor: systemColor,
+                              userColor: userColor, ramColor: ramColor)
+            if metric == .cpu {
+                Divider()
+                processCounts
+            }
+        }
+    }
+
+    private func historyReading(_ label: String, _ value: String?, tint: Color = .primary) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(value ?? "—").font(.callout.weight(.semibold)).monospacedDigit()
+                .foregroundStyle(tint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label == "Est. available" ? "Estimated RAM available" : label)
+        .accessibilityValue(value ?? "Unavailable")
+    }
+
+    private var processCounts: some View {
+        let counts = host?.processCounts
+        let sampled = counts.flatMap { $0.processesWithThreadCounts > 0 ? $0 : nil }
+        return HStack(alignment: .firstTextBaseline, spacing: 12) {
+            countLabel("Processes", counts?.processes.formatted())
+            countLabel("Observed threads", sampled?.observedThreads.formatted())
+            if let sampled, sampled.processesWithThreadCounts < sampled.processes {
+                Text("From \(sampled.processesWithThreadCounts.formatted()) of \(sampled.processes.formatted()) processes")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption)
+    }
+
+    private func countLabel(_ label: String, _ value: String?) -> some View {
+        Text("\(label): \(value ?? "—")")
+            .monospacedDigit()
+            .accessibilityLabel("\(label): \(value ?? "Unavailable")")
     }
 
     private var nerdStats: some View {
@@ -574,6 +641,7 @@ struct Dashboard: View {
 struct WorkloadMeterApp: App {
     @StateObject private var monitor: Monitor
     @AppStorage("metric") private var metric: Metric = .cpu
+    @AppStorage("chartMode") private var chartMode: ChartViewMode = .pie
 
     init() {
         let arguments = Array(CommandLine.arguments.dropFirst())
@@ -587,8 +655,8 @@ struct WorkloadMeterApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            Dashboard(host: monitor.host, guest: monitor.guest, ended: monitor.endedJobs,
-                      metric: $metric, expanded: $monitor.expanded) { NSApp.terminate(nil) }
+            Dashboard(host: monitor.host, history: monitor.history, guest: monitor.guest, ended: monitor.endedJobs,
+                      metric: $metric, chartMode: $chartMode, expanded: $monitor.expanded) { NSApp.terminate(nil) }
                 .onAppear { monitor.setShowing(true) }
                 .onDisappear { monitor.setShowing(false) }
         } label: {
@@ -616,12 +684,17 @@ struct WorkloadMeterApp: App {
             .formatted(.percent.precision(.fractionLength(0)))
     }
 
+    private var cpuStatus: String? {
+        freshHost?.busy?.formatted(.percent.precision(.fractionLength(0)))
+    }
+
     private var statusText: String {
-        "RAM " + (ramStatus ?? "—")
+        "CPU " + (cpuStatus ?? "—") + "  RAM " + (ramStatus ?? "—")
     }
 
     private var statusLabel: String {
-        RamBrand.name + ", Mac RAM used " + (ramStatus ?? "unavailable")
+        RamBrand.name + ", Mac CPU used " + (cpuStatus ?? "unavailable") +
+            ", Mac RAM used " + (ramStatus ?? "unavailable")
     }
 
     private static func snapshot() -> HostSnapshot {
@@ -650,8 +723,9 @@ struct WorkloadMeterApp: App {
         let ram = arguments[1].contains("-ram")
         let host = snapshot()
         let guest = ram ? RunnerSampler().sample() : nil
-        let view = Dashboard(host: host, guest: guest, ended: [:],
-                             metric: .constant(ram ? .ram : .cpu), expanded: .constant(ram ? .docker : .codex),
+        let view = Dashboard(host: host, history: UsageHistory(), guest: guest, ended: [:],
+                             metric: .constant(ram ? .ram : .cpu), chartMode: .constant(.pie),
+                             expanded: .constant(ram ? .docker : .codex),
                              onQuit: {})
             .padding(4).background(.regularMaterial)
             .environment(\.colorScheme, ram ? .dark : .light)

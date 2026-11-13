@@ -33,7 +33,8 @@ done
 compile_meter() {
   /usr/bin/swiftc -O -swift-version 5 -target "$1-apple-macosx14.0" \
     "$source_directory/Sources/HostMetrics.swift" "$source_directory/Sources/Registration.swift" \
-    "$source_directory/Sources/Monitor.swift" "$source_directory/Sources/WorkloadMeter.swift" \
+    "$source_directory/Sources/Monitor.swift" "$source_directory/Sources/UsageHistory.swift" \
+    "$source_directory/Sources/WorkloadMeter.swift" \
     -o "$2"
 }
 executable="$bundle/Contents/MacOS/WorkloadMeter"

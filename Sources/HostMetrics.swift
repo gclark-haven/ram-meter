@@ -61,6 +61,7 @@ struct HostSnapshot: Codable {
     let usedMemoryBytes: UInt64?
     let memoryPressure: String?
     let missingProcesses: Int
+    let processCounts: ProcessCounts?
     let cores: Int
     let cpuUser: Double?
     let cpuSystem: Double?
@@ -69,6 +70,12 @@ struct HostSnapshot: Codable {
     let compressedBytes: UInt64?
     let pageInBytesPerSecond: Double?
     let pageOutBytesPerSecond: Double?
+}
+
+struct ProcessCounts: Codable {
+    let processes: Int
+    let observedThreads: Int
+    let processesWithThreadCounts: Int
 }
 
 func processUsage(_ pid: pid_t) -> rusage_info_v0? {
@@ -127,17 +134,34 @@ final class HostSampler {
         return [ticks.0, ticks.1, ticks.2, ticks.3]
     }
 
-    private func readProcesses() -> ([ProcessReading], Int) {
-        var pids = [pid_t](repeating: 0, count: max(256, Int(proc_listallpids(nil, 0)) + 128))
-        let count = pids.withUnsafeMutableBytes {
-            Int(proc_listallpids($0.baseAddress, Int32($0.count)))
+    private func readProcesses() -> ([ProcessReading], Int, ProcessCounts?) {
+        func listPIDs(_ capacity: Int) -> (pids: [pid_t], count: Int) {
+            var pids = [pid_t](repeating: 0, count: capacity)
+            let count = pids.withUnsafeMutableBytes {
+                Int(proc_listallpids($0.baseAddress, Int32($0.count)))
+            }
+            return (pids, count)
         }
-        guard count > 0 else { return ([], 1) }
+        let capacity = max(256, Int(proc_listallpids(nil, 0)) + 128)
+        var list = listPIDs(capacity)
+        if list.count >= list.pids.count { list = listPIDs(capacity * 2) }
+        guard list.count > 0 else { return ([], 1, nil) }
+        let pids = list.pids.prefix(list.count).filter { $0 > 0 }
         var denied = 0
+        var observedThreads = 0
+        var processesWithThreadCounts = 0
         var rows: [ProcessReading] = []
         var path = [CChar](repeating: 0, count: 4096)
-        for pid in pids.prefix(count) where pid > 0 {
-            guard let info = processBSDInfo(pid) else { denied += 1; continue }
+        for pid in pids {
+            var task = proc_taskallinfo()
+            let size = Int32(MemoryLayout.size(ofValue: task))
+            let taskRead = proc_pidinfo(pid, PROC_PIDTASKALLINFO, 0, &task, size) == size
+            if taskRead, task.ptinfo.pti_threadnum > 0 {
+                observedThreads += Int(task.ptinfo.pti_threadnum)
+                processesWithThreadCounts += 1
+            }
+            // Keep attribution for processes whose basic information is readable.
+            guard let info = taskRead ? task.pbsd : processBSDInfo(pid) else { denied += 1; continue }
             guard let usage = processUsage(pid) else { denied += 1; continue }
             let key = ProcessKey(pid: pid, start: usage.ri_proc_start_abstime)
             let executable: String
@@ -152,7 +176,11 @@ final class HostSampler {
                                        cpu: usage.ri_user_time + usage.ri_system_time,
                                        bytes: usage.ri_phys_footprint, executable: executable))
         }
-        return (rows, denied)
+        let counts = list.count < list.pids.count && !pids.isEmpty
+            ? ProcessCounts(processes: pids.count, observedThreads: observedThreads,
+                            processesWithThreadCounts: processesWithThreadCounts)
+            : nil
+        return (rows, denied, counts)
     }
 
     private func pressure() -> String? {
@@ -204,7 +232,7 @@ final class HostSampler {
         let now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
         let ticks = hostTicks()
         let memory = memoryStatistics()
-        let (processes, denied) = readProcesses()
+        let (processes, denied, counts) = readProcesses()
         let table = Dictionary(uniqueKeysWithValues: processes.map { ($0.key.pid, $0) })
         let registrations = Registration.activeProcesses(table)
         let dockerVMs = processes.filter { $0.executable.hasSuffix("/com.apple.Virtualization.VirtualMachine") }
@@ -281,7 +309,7 @@ final class HostSampler {
                             processBytes: groups.values.reduce(0) { $0 + $1.bytes },
                             installedBytes: hardware.physicalMemory, usedMemoryBytes: memory.map(usedMemoryBytes),
                             memoryPressure: pressure(),
-                            missingProcesses: denied, cores: coreCount,
+                            missingProcesses: denied, processCounts: counts, cores: coreCount,
                             cpuUser: cpuUser, cpuSystem: cpuSystem, physicalCores: physicalCores,
                             wiredBytes: memory.map { UInt64($0.wire_count) * UInt64(vm_kernel_page_size) },
                             compressedBytes: memory.map { UInt64($0.compressor_page_count) * UInt64(vm_kernel_page_size) },
