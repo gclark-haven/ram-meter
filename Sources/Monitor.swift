@@ -127,7 +127,7 @@ final class Monitor: ObservableObject {
 
     private func schedule() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: showing ? 2 : 10, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             self?.poll()
         }
         timer?.tolerance = 0.25

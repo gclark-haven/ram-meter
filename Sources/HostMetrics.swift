@@ -208,7 +208,13 @@ final class HostSampler {
                 host_statistics64(host, HOST_VM_INFO64, $0, &count)
             }
         }
-        guard status == KERN_SUCCESS, count >= words, info.wire_count > 0 else { return nil }
+        // Older kernels return the original VM counters without the tag-storage fields.
+        let tagOffset = MemoryLayout<vm_statistics64>.offset(of: \.total_tag_storage_pages)!
+        guard status == KERN_SUCCESS, Int(count) * MemoryLayout<integer_t>.size >= tagOffset,
+              info.wire_count > 0 else { return nil }
+        if Int(count) * MemoryLayout<integer_t>.size < tagOffset + MemoryLayout<UInt64>.size {
+            info.total_tag_storage_pages = 0
+        }
         return info
     }
 
@@ -217,7 +223,9 @@ final class HostSampler {
         // Exclude purgeable anonymous pages and avoid counting file caches.
         let anonymous = UInt64(info.internal_page_count) -
             UInt64(min(info.internal_page_count, info.purgeable_count))
+        // Include the kernel-reported tag-storage region in the whole-Mac estimate.
         let pages = anonymous + UInt64(info.wire_count) + UInt64(info.compressor_page_count)
+            + info.total_tag_storage_pages
         return min(pages * UInt64(vm_kernel_page_size), hardware.physicalMemory)
     }
 

@@ -24,7 +24,7 @@ This download is ad hoc signed and has no Apple notarization. After trying to op
 
 ## What the numbers mean
 
-- **Menu bar RAM** shows the estimated share of installed memory in use. The estimate includes wired and compressed memory and excludes file cache.
+- **Menu bar RAM** shows the estimated share of installed memory in use. The estimate includes wired and compressed memory and the tag-storage region where macOS reports it. It excludes file cache. Compare it with **Memory Used ÷ Physical Memory** in Activity Monitor. For CPU, compare **System + User**. Ram Meter samples about every two seconds. Activity Monitor has its own refresh setting.
 - **Available capacity** appears above each chart. CPU availability is idle capacity. RAM availability is estimated from installed RAM minus the same used-memory estimate shown in the menu bar.
 - **RAM workload rows** show process footprints. Shared resources can be counted in more than one footprint. Node servers with a detectable TCP listener, iOS Simulator, and Android Emulator get separate rows while running. A detected development process goes into its own group even if Codex launched it.
 - **Docker run details** show guest usage inside the VM. The whole-Mac total already includes the VM.
