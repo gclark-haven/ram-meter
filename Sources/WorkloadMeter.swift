@@ -26,11 +26,42 @@ private enum RamBrand {
     static func workload(_ group: Workload, dark: Bool) -> Color {
         switch group {
         case .docker: return color(dark ? 0xf58a73 : 0xac513d)
-        case .codex: return color(dark ? 0x59c7b6 : 0x287c72)
+        case .codex: return color(dark ? 0xc6a3f4 : 0x7450a6)
         case .browsers: return color(dark ? 0xedac5d : 0x9c661f)
         case .other: return color(dark ? 0x90acd7 : 0x56739f)
-        case .idle: return color(dark ? 0x9195a1 : 0x817e87)
+        case .idle: return color(dark ? 0x78e1cb : 0x19766b)
         }
+    }
+}
+
+struct CapacityReading {
+    let used: Double
+    let total: Double
+    var available: Double { total - used }
+
+    init?(used: Double?, total: Double) {
+        guard let used, used.isFinite, total.isFinite, total > 0, (0...total).contains(used) else {
+            return nil
+        }
+        self.used = used
+        self.total = total
+    }
+}
+
+private struct CapacityTicks: Shape {
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let radius = min(rect.width, rect.height) / 2
+        var path = Path()
+        for tick in 0..<48 {
+            let angle = Double(tick) * .pi / 24
+            let length: Double = tick.isMultiple(of: 12) ? 5 : 2
+            path.move(to: CGPoint(x: center.x + cos(angle) * (radius - length),
+                                  y: center.y + sin(angle) * (radius - length)))
+            path.addLine(to: CGPoint(x: center.x + cos(angle) * radius,
+                                     y: center.y + sin(angle) * radius))
+        }
+        return path
     }
 }
 
@@ -65,7 +96,18 @@ struct Dashboard: View {
     }
 
     private var visible: [Workload] {
-        metric == .cpu ? Workload.allCases : Workload.allCases.filter { $0 != .idle }
+        Workload.allCases.filter { $0 != .idle }
+    }
+
+    private var capacity: CapacityReading? {
+        guard let host else { return nil }
+        if metric == .cpu { return CapacityReading(used: host.busy, total: 1) }
+        return CapacityReading(used: host.usedMemoryBytes.map { Double($0) }, total: Double(host.installedBytes))
+    }
+
+    private func capacityValue(_ amount: Double) -> String {
+        if metric == .cpu { return percent(amount) }
+        return (amount / Double(1 << 30)).formatted(.number.precision(.fractionLength(1))) + " GiB"
     }
 
     private func amount(_ value: Measurement) -> Double {
@@ -117,16 +159,27 @@ struct Dashboard: View {
                 .labelsHidden()
                 overview
             }
-            .padding(.vertical, 9)
+            .padding(12)
             .frame(maxWidth: .infinity)
-            .background(RamBrand.color(dark ? 0x302d2e : 0xf2e8de),
-                        in: RoundedRectangle(cornerRadius: 12))
+            .background {
+                RoundedRectangle(cornerRadius: 14).fill(
+                    LinearGradient(colors: [
+                        RamBrand.color(dark ? 0x372a3d : 0xf3e9e2),
+                        RamBrand.color(dark ? 0x252832 : 0xf8f2ef)
+                    ], startPoint: .topLeading, endPoint: .bottomTrailing)
+                )
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(.primary.opacity(0.10))
+                    .allowsHitTesting(false)
+            }
 
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     Text("Workload")
                     Spacer()
-                    Text(metric == .cpu ? "Share of Mac CPU" : "Process RAM").padding(.trailing, 20)
+                    Text(metric == .cpu ? "Share of Mac CPU" : "Process footprint").padding(.trailing, 20)
                 }
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -148,7 +201,14 @@ struct Dashboard: View {
                     .padding(.horizontal, 4)
                 }
                 .scrollBounceBehavior(.basedOnSize)
-                .frame(height: expanded == nil ? 199 : 292)
+                .frame(height: expanded == nil ? 160 : 260)
+                if metric == .ram {
+                    Text("Process footprints can overlap.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.top, 6)
+                }
             }
 
             HStack(alignment: .center) {
@@ -169,56 +229,97 @@ struct Dashboard: View {
     }
 
     private var overview: some View {
-        VStack(spacing: 5) {
-            ZStack {
-                Circle().stroke(.quaternary, lineWidth: 12).padding(6)
-                if let host {
-                    if metric == .cpu, let busy = host.busy, !host.cpuBreakdown {
-                        donut([(.other, busy), (.idle, 1 - busy)])
-                    } else if metric == .ram || host.cpuBreakdown {
-                        donut(visible.compactMap { group in
-                            guard let value = host.groups[group.id], amount(value) > 0 else { return nil }
-                            return (group, amount(value))
-                        })
+        let reading = capacity
+        return VStack(spacing: 7) {
+            HStack(spacing: 23) {
+                ZStack {
+                    CapacityTicks()
+                        .stroke(.primary.opacity(dark ? 0.26 : 0.20), lineWidth: 0.75)
+                        .accessibilityHidden(true)
+                    if let reading {
+                        donut(slices(reading))
+                            .padding(7)
+                    } else {
+                        Circle().strokeBorder(.primary.opacity(0.16), lineWidth: 15)
+                            .padding(7).accessibilityHidden(true)
                     }
+                    VStack(spacing: 3) {
+                        Text(reading.map { capacityValue($0.available) } ?? "—")
+                            .font(.system(size: 26, weight: .semibold, design: .rounded))
+                            .foregroundStyle(reading == nil ? Color.secondary : RamBrand.workload(.idle, dark: dark))
+                            .monospacedDigit().lineLimit(1).minimumScaleFactor(0.60)
+                        Text(metric == .cpu ? "CPU available" : "RAM available")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 92)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel((metric == .cpu ? "CPU available" : "Estimated RAM available") +
+                        ", " + (reading.map { capacityValue($0.available) } ?? "unavailable"))
+                    .accessibilityAddTraits(.isStaticText)
                 }
-                VStack(spacing: 2) {
-                    Text(totalValue)
-                        .font(.system(size: 25, weight: .semibold))
-                        .monospacedDigit()
-                    Text(metric == .cpu ? "Mac CPU busy" : "Process footprint")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                .frame(width: 152, height: 152)
+                VStack(alignment: .leading, spacing: 8) {
+                    capacityStat(metric == .cpu ? "CPU busy" : "RAM used",
+                                 reading.map { capacityValue($0.used) })
+                    Divider()
+                    capacityStat(metric == .cpu ? "Logical cores" : "Installed RAM", host.map {
+                        metric == .cpu ? $0.cores.formatted() : capacityValue(Double($0.installedBytes))
+                    })
                 }
-                .accessibilityElement(children: .combine)
+                .frame(width: 126, alignment: .leading)
             }
-            .frame(width: 130, height: 130)
             Text(overviewNote)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 1)
     }
 
-    private func donut(_ slices: [(Workload, Double)]) -> some View {
-        Chart(slices, id: \.0.id) { group, value in
-            SectorMark(angle: .value("Share", value), innerRadius: .ratio(0.81), angularInset: 0.9)
-                .foregroundStyle(RamBrand.workload(group, dark: dark))
+    private func capacityStat(_ label: String, _ value: String?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+            Text(value ?? "—").font(.system(.title3, design: .rounded).weight(.semibold))
+                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.70)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label + ", " + (value ?? "unavailable"))
+        .accessibilityAddTraits(.isStaticText)
+    }
+
+    private func slices(_ reading: CapacityReading) -> [(Workload?, Double)] {
+        var result: [(Workload?, Double)]
+        if metric == .cpu, let host, host.cpuBreakdown {
+            result = visible.compactMap { group in
+                guard let value = host.groups[group.id], value.cpu > 0 else { return nil }
+                return (group, value.cpu)
+            }
+        } else {
+            result = [(nil, reading.used)]
+        }
+        result.append((.idle, reading.available))
+        return result.filter { $0.1 > 0 }
+    }
+
+    private func donut(_ slices: [(Workload?, Double)]) -> some View {
+        Chart(slices, id: \.0) { group, value in
+            SectorMark(angle: .value("Capacity", value), innerRadius: .ratio(0.75),
+                       angularInset: slices.count > 1 ? 1.1 : 0)
+                .foregroundStyle(group.map { RamBrand.workload($0, dark: dark) } ?? usedCapacityColor)
         }
         .chartLegend(.hidden)
         .accessibilityHidden(true)
     }
 
-    private var totalValue: String {
-        guard let host else { return "—" }
-        if metric == .ram { return host.processBytes > 0 ? memory(host.processBytes) : "—" }
-        return host.busy.map(percent) ?? "—"
+    private var usedCapacityColor: Color {
+        if metric == .ram { return RamBrand.color(dark ? 0xff967a : 0xad503d) }
+        return RamBrand.color(dark ? 0xb8a8ba : 0x756577)
     }
 
     private var overviewNote: String {
+        if host == nil { return "Collecting Mac measurements" }
         if metric == .ram {
-            return "Share of measured Mac processes"
+            return capacity == nil ? "Physical memory reading unavailable" : "Whole Mac · estimated physical memory"
         }
         guard let host, host.busy != nil else { return "Collecting CPU samples" }
         if !host.cpuBreakdown { return "Waiting for a consistent CPU breakdown" }
@@ -227,34 +328,30 @@ struct Dashboard: View {
 
     private var footer: String {
         guard let host else { return "This Mac" }
-        if metric == .cpu { return "\(host.cores) logical cores · This Mac" }
-        let pressure = host.memoryPressure.map { "Pressure: " + $0 } ?? "Pressure unavailable"
+        if metric == .cpu { return "This Mac" }
+        let pressure = host.memoryPressure.map { "Memory pressure: " + $0 } ?? "Memory pressure unavailable"
         let coverage = host.missingProcesses == 0 ? "" : " · Partial process coverage"
-        return memory(host.installedBytes) + " installed · " + pressure + coverage
+        return pressure + coverage
     }
 
     private func groupRow(_ group: Workload) -> some View {
-        Group {
-            if group == .idle {
-                groupLabel(group)
-            } else {
-                Button {
-                    expanded = expanded == group ? nil : group
-                } label: {
-                    groupLabel(group)
-                }
-                .buttonStyle(.plain)
-                .accessibilityHint(expanded == group ? "Hide workload details" : "Show workload details")
-                .accessibilityValue(expanded == group ? "Expanded" : "Collapsed")
-            }
+        Button {
+            expanded = expanded == group ? nil : group
+        } label: {
+            groupLabel(group)
         }
+        .buttonStyle(.plain)
+        .accessibilityHint(expanded == group ? "Hide workload details" : "Show workload details")
+        .accessibilityValue(expanded == group ? "Expanded" : "Collapsed")
     }
 
     private func groupLabel(_ group: Workload) -> some View {
         HStack(spacing: 8) {
-            RoundedRectangle(cornerRadius: 2.5)
-                .fill(RamBrand.workload(group, dark: dark)).frame(width: 9, height: 9)
-                .accessibilityHidden(true)
+            if metric == .cpu {
+                RoundedRectangle(cornerRadius: 2.5)
+                    .fill(RamBrand.workload(group, dark: dark)).frame(width: 9, height: 9)
+                    .accessibilityHidden(true)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(group.name).fontWeight(.semibold)
                 if let text = subtitle(group) {
@@ -266,7 +363,6 @@ struct Dashboard: View {
             Image(systemName: expanded == group ? "chevron.down" : "chevron.right")
                 .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
                 .frame(width: 12)
-                .opacity(group == .idle ? 0 : 1)
                 .accessibilityHidden(true)
         }
         .padding(.horizontal, 6)

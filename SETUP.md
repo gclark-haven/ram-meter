@@ -26,7 +26,8 @@ This download is ad hoc signed and has no Apple notarization. After trying to op
 
 - **Menu bar CPU** shows busy capacity as a percentage across the whole Mac.
 - **Menu bar RAM** estimates physical memory in use in GiB, including wired and compressed memory. File cache is excluded.
-- **Popover RAM** compares measured process footprints. Those measurements use a different accounting method from the menu bar total.
+- **Popover charts** show available capacity in the center. CPU availability is idle capacity. RAM availability is estimated from installed RAM minus the same used-memory estimate shown in the menu bar.
+- **RAM workload rows** show process footprints. Shared resources can be counted in more than one footprint.
 - **Docker run details** show guest usage inside the VM. The whole-Mac total already includes the VM.
 
 ## Track a Codex command
