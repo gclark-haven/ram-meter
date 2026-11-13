@@ -1,5 +1,4 @@
 import AppKit
-import Charts
 import Foundation
 import SwiftUI
 
@@ -51,23 +50,6 @@ struct CapacityReading {
     }
 }
 
-private struct CapacityTicks: Shape {
-    func path(in rect: CGRect) -> Path {
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let radius = min(rect.width, rect.height) / 2
-        var path = Path()
-        for tick in 0..<48 {
-            let angle = Double(tick) * .pi / 24
-            let length: Double = tick.isMultiple(of: 12) ? 5 : 2
-            path.move(to: CGPoint(x: center.x + cos(angle) * (radius - length),
-                                  y: center.y + sin(angle) * (radius - length)))
-            path.addLine(to: CGPoint(x: center.x + cos(angle) * radius,
-                                     y: center.y + sin(angle) * radius))
-        }
-        return path
-    }
-}
-
 private func percent(_ amount: Double) -> String {
     amount.formatted(.percent.precision(.fractionLength(0...1)))
 }
@@ -85,7 +67,6 @@ struct Dashboard: View {
     let guest: GuestSnapshot?
     let ended: [String: Monitor.EndedJob]
     @Binding var metric: Metric
-    @Binding var chartMode: ChartViewMode
     @Binding var expanded: Workload?
     var onQuit: () -> Void
     @State private var trackingCopyStatus: String?
@@ -105,7 +86,7 @@ struct Dashboard: View {
         Workload.allCases.filter {
             switch $0 {
             case .idle: return false
-            case .nodeServers, .iOSSimulator, .androidEmulator: return host?.groups[$0.id] != nil
+            case .nodeServers, .iOSSimulator, .androidEmulator: return host?.groups[$0.id] != nil || history.contains($0, for: metric)
             default: return true
             }
         }
@@ -164,18 +145,12 @@ struct Dashboard: View {
             .foregroundStyle(.secondary)
 
             VStack(spacing: 8) {
-                HStack(spacing: 10) {
-                    Picker("Resource metric", selection: $metric) {
-                        ForEach(Metric.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                    }
-                    Picker("Chart view", selection: $chartMode) {
-                        ForEach(ChartViewMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                    }
+                Picker("Resource metric", selection: $metric) {
+                    ForEach(Metric.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                if chartMode == .pie { overview }
-                else { historyOverview }
+                historyOverview
             }
             .padding(12)
             .frame(maxWidth: .infinity)
@@ -227,13 +202,7 @@ struct Dashboard: View {
                         .padding(.horizontal, 6)
                         .padding(.top, 6)
                 }
-                if metric == .ram {
-                    Text("Process footprints can overlap.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.top, 6)
-                }
+
             }
 
             DisclosureGroup("Stats for nerds", isExpanded: $showStats) {
@@ -264,15 +233,13 @@ struct Dashboard: View {
     }
 
     private var historyOverview: some View {
-        let systemColor = RamBrand.workload(.docker, dark: dark)
-        let userColor = RamBrand.workload(.other, dark: dark)
         let ramColor = RamBrand.workload(.idle, dark: dark)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 if metric == .cpu {
-                    historyReading("System", host?.cpuSystem.map(percent), tint: systemColor)
-                    historyReading("User", host?.cpuUser.map(percent), tint: userColor)
-                    historyReading("Idle", host?.busy.map { percent(1 - $0) })
+                    historyReading("System", host?.cpuSystem.map(percent))
+                    historyReading("User", host?.cpuUser.map(percent))
+                    historyReading("Idle", host?.busy.map { percent(1 - $0) }, tint: ramColor)
                 } else {
                     historyReading("RAM used", capacity.map { capacityValue($0.used) }, tint: ramColor)
                     historyReading("Est. available", capacity.map { capacityValue($0.available) })
@@ -281,11 +248,16 @@ struct Dashboard: View {
                     })
                 }
             }
-            UsageHistoryChart(metric: metric, history: history, systemColor: systemColor,
-                              userColor: userColor, ramColor: ramColor)
+            UsageHistoryChart(metric: metric, history: history,
+                              workloads: visible + (metric == .cpu ? [.idle] : [])) {
+                RamBrand.workload($0, dark: dark)
+            }
             if metric == .cpu {
                 Divider()
                 processCounts
+            } else {
+                Text("Process footprints can overlap.")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
         }
     }
@@ -371,104 +343,6 @@ struct Dashboard: View {
         let divisor: Double = rate < 1_048_576 ? 1_024 : 1_048_576
         let value = (rate / divisor).formatted(.number.precision(.fractionLength(0...1)))
         return value + (divisor == 1_024 ? " KiB/s" : " MiB/s")
-    }
-
-    private var overview: some View {
-        let reading = capacity
-        return VStack(spacing: 7) {
-            HStack(spacing: 23) {
-                ZStack {
-                    CapacityTicks()
-                        .stroke(.primary.opacity(dark ? 0.26 : 0.20), lineWidth: 0.75)
-                        .accessibilityHidden(true)
-                    if let reading {
-                        donut(slices(reading))
-                            .padding(7)
-                    } else {
-                        Circle().strokeBorder(.primary.opacity(0.16), lineWidth: 15)
-                            .padding(7).accessibilityHidden(true)
-                    }
-                    VStack(spacing: 3) {
-                        Text(reading.map { capacityValue($0.available) } ?? "—")
-                            .font(.system(size: 26, weight: .semibold, design: .rounded))
-                            .foregroundStyle(reading == nil ? Color.secondary : RamBrand.workload(.idle, dark: dark))
-                            .monospacedDigit().lineLimit(1).minimumScaleFactor(0.60)
-                        Text(metric == .cpu ? "CPU available" : "RAM available")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(width: 92)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel((metric == .cpu ? "CPU available" : "Estimated RAM available") +
-                        ", " + (reading.map { capacityValue($0.available) } ?? "unavailable"))
-                    .accessibilityAddTraits(.isStaticText)
-                }
-                .frame(width: 152, height: 152)
-                VStack(alignment: .leading, spacing: 8) {
-                    capacityStat(metric == .cpu ? "CPU busy" : "RAM used",
-                                 reading.map { capacityValue($0.used) })
-                    Divider()
-                    capacityStat(metric == .cpu ? "Logical cores" : "Installed RAM", host.map {
-                        metric == .cpu ? $0.cores.formatted() : capacityValue(Double($0.installedBytes))
-                    })
-                }
-                .frame(width: 126, alignment: .leading)
-            }
-            Text(overviewNote)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func capacityStat(_ label: String, _ value: String?) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.caption2.weight(.medium)).foregroundStyle(.secondary)
-            Text(value ?? "—").font(.system(.title3, design: .rounded).weight(.semibold))
-                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.70)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label + ", " + (value ?? "unavailable"))
-        .accessibilityAddTraits(.isStaticText)
-    }
-
-    private func slices(_ reading: CapacityReading) -> [(Workload?, Double)] {
-        var result: [(Workload?, Double)]
-        if metric == .cpu, let host, host.cpuBreakdown {
-            result = visible.compactMap { group in
-                guard let value = host.groups[group.id], value.cpu > 0 else { return nil }
-                return (group, value.cpu)
-            }
-        } else {
-            result = [(nil, reading.used)]
-        }
-        result.append((.idle, reading.available))
-        return result.filter { $0.1 > 0 }
-    }
-
-    private func donut(_ slices: [(Workload?, Double)]) -> some View {
-        Chart(slices, id: \.0) { group, value in
-            SectorMark(angle: .value("Capacity", value), innerRadius: .ratio(0.75),
-                       angularInset: slices.count > 1 ? 1.1 : 0)
-                .foregroundStyle(group.map { RamBrand.workload($0, dark: dark) } ?? usedCapacityColor)
-        }
-        .chartLegend(.hidden)
-        .accessibilityHidden(true)
-    }
-
-    private var usedCapacityColor: Color {
-        if metric == .ram { return RamBrand.color(dark ? 0xff967a : 0xad503d) }
-        return RamBrand.color(dark ? 0xb8a8ba : 0x756577)
-    }
-
-    private var overviewNote: String {
-        if host == nil { return "Collecting Mac measurements" }
-        if metric == .ram {
-            return capacity == nil ? "Physical memory reading unavailable" : "Whole Mac · estimated physical memory"
-        }
-        guard let host, host.busy != nil else { return "Collecting CPU samples" }
-        if !host.cpuBreakdown { return "Waiting for a consistent CPU breakdown" }
-        return "Whole Mac · latest sampling interval"
     }
 
     private var footer: String {
@@ -641,7 +515,6 @@ struct Dashboard: View {
 struct WorkloadMeterApp: App {
     @StateObject private var monitor: Monitor
     @AppStorage("metric") private var metric: Metric = .cpu
-    @AppStorage("chartMode") private var chartMode: ChartViewMode = .pie
 
     init() {
         let arguments = Array(CommandLine.arguments.dropFirst())
@@ -656,7 +529,7 @@ struct WorkloadMeterApp: App {
     var body: some Scene {
         MenuBarExtra {
             Dashboard(host: monitor.host, history: monitor.history, guest: monitor.guest, ended: monitor.endedJobs,
-                      metric: $metric, chartMode: $chartMode, expanded: $monitor.expanded) { NSApp.terminate(nil) }
+                      metric: $metric, expanded: $monitor.expanded) { NSApp.terminate(nil) }
                 .onAppear { monitor.setShowing(true) }
                 .onDisappear { monitor.setShowing(false) }
         } label: {
@@ -664,7 +537,7 @@ struct WorkloadMeterApp: App {
                 if let mark = RamBrand.mark {
                     Image(nsImage: mark).accessibilityHidden(true)
                 } else {
-                    Image(systemName: "chart.pie").accessibilityHidden(true)
+                    Image(systemName: "chart.xyaxis.line").accessibilityHidden(true)
                 }
                 Text(statusText).monospacedDigit()
             }
@@ -721,11 +594,17 @@ struct WorkloadMeterApp: App {
         guard arguments.count == 2 else { exit(64) }
         _ = NSApplication.shared
         let ram = arguments[1].contains("-ram")
-        let host = snapshot()
-        let guest = ram ? RunnerSampler().sample() : nil
-        let view = Dashboard(host: host, history: UsageHistory(), guest: guest, ended: [:],
-                             metric: .constant(ram ? .ram : .cpu), chartMode: .constant(.pie),
-                             expanded: .constant(ram ? .docker : .codex),
+        let sampler = HostSampler()
+        var history = UsageHistory()
+        var host = sampler.sample()
+        for _ in 0..<4 {
+            Thread.sleep(forTimeInterval: 0.5)
+            host = sampler.sample()
+            history.append(UsageSample(host: host, time: ProcessInfo.processInfo.systemUptime))
+        }
+        let view = Dashboard(host: host, history: history, guest: nil, ended: [:],
+                             metric: .constant(ram ? .ram : .cpu),
+                             expanded: .constant(nil),
                              onQuit: {})
             .padding(4).background(.regularMaterial)
             .environment(\.colorScheme, ram ? .dark : .light)

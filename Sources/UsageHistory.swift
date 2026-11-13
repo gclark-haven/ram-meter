@@ -2,29 +2,15 @@ import Charts
 import Foundation
 import SwiftUI
 
-enum ChartViewMode: String, CaseIterable {
-    case pie = "Pie"
-    case history = "History"
-}
-
 struct UsageSample {
     let time: TimeInterval
-    let cpuSystem: Double?
-    let cpuUser: Double?
-    let ramUsed: Double?
+    let cpu: [String: Measurement]?
+    let ram: [String: Measurement]?
 
     init(host: HostSnapshot, time: TimeInterval) {
-        self.init(time: time, cpuSystem: host.cpuSystem, cpuUser: host.cpuUser,
-                  ramUsed: host.installedBytes > 0
-                      ? host.usedMemoryBytes.map { Double($0) / Double(host.installedBytes) }
-                      : nil)
-    }
-
-    init(time: TimeInterval, cpuSystem: Double?, cpuUser: Double?, ramUsed: Double?) {
         self.time = time
-        self.cpuSystem = cpuSystem
-        self.cpuUser = cpuUser
-        self.ramUsed = ramUsed
+        cpu = host.cpuBreakdown ? host.groups : nil
+        ram = host.groups.keys.contains(where: { $0 != Workload.idle.id }) ? host.groups : nil
     }
 }
 
@@ -48,7 +34,11 @@ struct UsageHistory {
         }
     }
 
-    func segments(for metric: Metric, now: TimeInterval) -> [[Point]] {
+    func contains(_ workload: Workload, for metric: Metric) -> Bool {
+        samples.contains { (metric == .cpu ? $0.cpu : $0.ram)?[workload.id] != nil }
+    }
+
+    func segments(for metric: Metric, workload: Workload, now: TimeInterval) -> [[Point]] {
         var result: [[Point]] = []
         var segment: [Point] = []
         for sample in samples where (now - Self.window...now).contains(sample.time) {
@@ -56,13 +46,15 @@ struct UsageHistory {
             let point: Point?
             switch metric {
             case .cpu:
-                if let system = sample.cpuSystem, let user = sample.cpuUser {
-                    point = Point(time: time, lower: system, upper: min(1, system + user))
-                } else {
-                    point = nil
+                point = sample.cpu.map { groups in
+                    let lower = Workload.allCases.prefix(while: { $0 != workload })
+                        .reduce(0.0) { $0 + (groups[$1.id]?.cpu ?? 0) }
+                    return Point(time: time, lower: lower, upper: lower + (groups[workload.id]?.cpu ?? 0))
                 }
             case .ram:
-                point = sample.ramUsed.map { Point(time: time, lower: 0, upper: $0) }
+                point = sample.ram.map {
+                    Point(time: time, lower: 0, upper: Double($0[workload.id]?.bytes ?? 0) / Double(1 << 30))
+                }
             }
             if point == nil || segment.last.map({ time - $0.time >= Self.maximumGap }) == true {
                 if !segment.isEmpty { result.append(segment) }
@@ -78,17 +70,19 @@ struct UsageHistory {
 struct UsageHistoryChart: View {
     let metric: Metric
     let history: UsageHistory
-    let systemColor: Color
-    let userColor: Color
-    let ramColor: Color
+    let workloads: [Workload]
+    let color: (Workload) -> Color
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 2)) { _ in
-            let segments = history.segments(for: metric, now: ProcessInfo.processInfo.systemUptime)
-            let count = segments.reduce(0) { $0 + $1.count }
+            let now = ProcessInfo.processInfo.systemUptime
+            let series = workloads.map { history.segments(for: metric, workload: $0, now: now) }
+            let count = series.first?.reduce(0) { $0 + $1.count } ?? 0
+            let peak = series.flatMap { $0 }.flatMap { $0 }.map(\.upper).max() ?? 0
+            let ceiling = metric == .cpu ? 1 : max(1, (peak * 1.05).rounded(.up))
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
-                    Text(metric == .cpu ? "CPU load" : "Share of installed RAM in use")
+                    Text(metric == .cpu ? "Mac CPU by workload" : "RAM footprint by workload")
                         .font(.caption.weight(.semibold))
                     Spacer()
                     if count < 2 {
@@ -97,22 +91,20 @@ struct UsageHistoryChart: View {
                     }
                 }
                 Chart {
-                    ForEach(segments.indices, id: \.self) { index in
-                        let segment = segments[index]
-                        ForEach(segment.indices, id: \.self) { offset in
-                            let point = segment[offset]
-                            band(point, start: point.lower, end: point.upper,
-                                 series: "upper-\(index)", color: metric == .cpu ? userColor : ramColor,
-                                 isolated: segment.count == 1)
-                            if metric == .cpu {
-                                band(point, start: 0, end: point.lower,
-                                     series: "system-\(index)", color: systemColor, isolated: segment.count == 1)
+                    ForEach(workloads.indices, id: \.self) { i in
+                        ForEach(series[i].indices, id: \.self) { j in
+                            let segment = series[i][j]
+                            ForEach(segment.indices, id: \.self) { k in
+                                let point = segment[k]
+                                band(point, start: point.lower, end: point.upper,
+                                     series: "\(workloads[i].id)-\(j)", color: color(workloads[i]),
+                                     isolated: segment.count == 1)
                             }
                         }
                     }
                 }
                 .chartXScale(domain: -UsageHistory.window...0)
-                .chartYScale(domain: 0.0...1.0)
+                .chartYScale(domain: 0.0...ceiling)
                 .chartXAxis {
                     AxisMarks(values: [-UsageHistory.window, 0]) { mark in
                         AxisValueLabel(anchor: mark.index == 0 ? .topLeading : .topTrailing) {
@@ -121,10 +113,10 @@ struct UsageHistoryChart: View {
                     }
                 }
                 .chartYAxis {
-                    AxisMarks(position: .trailing, values: [0.0, 0.5, 1.0]) { mark in
+                    AxisMarks(position: .trailing, values: [0.0, ceiling / 2, ceiling]) { mark in
                         AxisGridLine()
-                        if let value = mark.as(Double.self), value != 0.5 {
-                            AxisValueLabel { Text(value.formatted(.percent)) }
+                        if let value = mark.as(Double.self), value != ceiling / 2 {
+                            AxisValueLabel { Text(metric == .cpu ? value.formatted(.percent) : value.formatted() + " GiB") }
                         }
                     }
                 }
@@ -139,8 +131,8 @@ struct UsageHistoryChart: View {
 
     private func chartSummary(count: Int) -> String {
         let scope = metric == .cpu
-            ? "CPU load history. System and user CPU, with idle as unfilled space."
-            : "RAM usage history. Share of installed RAM in use."
+            ? "CPU load history. Stacked workload shares, including idle."
+            : "RAM usage history. Separate workload footprints in GiB."
         let readings = count == 0
             ? "No readings in the last 60 seconds."
             : "\(count) \(count == 1 ? "reading" : "readings") in the last 60 seconds."
@@ -150,19 +142,23 @@ struct UsageHistoryChart: View {
     @ChartContentBuilder
     private func band(_ point: UsageHistory.Point, start: Double, end: Double,
                       series: String, color: Color, isolated: Bool) -> some ChartContent {
-        if isolated {
+        if isolated && end > start {
             PointMark(x: .value("Seconds from now", point.time), y: .value("Share", end))
                 .symbolSize(16)
                 .foregroundStyle(color)
-        } else {
-            AreaMark(x: .value("Seconds from now", point.time),
+        } else if !isolated {
+            if metric == .cpu {
+                AreaMark(x: .value("Seconds from now", point.time),
                      yStart: .value("Lower share", start), yEnd: .value("Upper share", end),
                      series: .value("Series", series))
-                .foregroundStyle(color.opacity(0.20))
-            LineMark(x: .value("Seconds from now", point.time), y: .value("Share", end),
+                .foregroundStyle(color.opacity(0.48))
+            }
+            if metric == .ram {
+                LineMark(x: .value("Seconds from now", point.time), y: .value("Share", end),
                      series: .value("Series", series))
                 .foregroundStyle(color)
                 .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+            }
         }
     }
 }

@@ -4,7 +4,7 @@
 
 <p><img src="Assets/app-icon.svg" width="96" alt="Ram Meter bighorn ram logo"></p>
 
-Ram Meter compares CPU and RAM use across Docker, Codex, browsers, and other apps. Running Node servers, iOS simulators, and Android emulators get their own rows.
+Ram Meter shows the last 60 seconds of CPU and RAM use across Docker, Codex, browsers, and other apps. Running Node servers, iOS simulators, and Android emulators get their own rows.
 
 **[Download the DMG](https://github.com/gclark-haven/ram-meter/releases/latest)** · macOS 14 or later · Apple silicon and Intel
 
@@ -22,8 +22,6 @@ The download is ad hoc signed and has no Apple notarization. If macOS blocks the
 All sampling runs on your Mac.
 
 ## Build from source
-
-The current source shows **CPU %** and **RAM %** in the menu bar. Click the ram and choose **Pie** for available capacity or **History** for the last 60 seconds of CPU or RAM use.
 
 Install Apple’s Command Line Tools with `xcode-select --install`, then run these commands from the repository:
 
