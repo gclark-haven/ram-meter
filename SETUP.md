@@ -22,6 +22,25 @@ The disk image includes an app for Apple silicon and Intel Macs running macOS 14
 
 This download is ad hoc signed and has no Apple notarization. After trying to open the app, go to **System Settings → Privacy & Security**. If **Open Anyway** appears for Ram Meter, select it and confirm. This makes an exception for Ram Meter on that Mac. Some managed Macs may restrict this option. [Apple’s first launch instructions](https://support.apple.com/en-us/102445)
 
+## Open Ram Meter at login
+
+Ram Meter can open automatically after you sign in to macOS. Choose one setup method.
+
+### Agentic setup
+
+From a checkout of this repository, run the script as the signed-in Mac user. Pass the absolute path to the installed app.
+
+```sh
+zsh login-launch.sh enable "/Applications/Ram Meter.app"
+zsh login-launch.sh status
+```
+
+For a per-user install, pass "$HOME/Applications/Ram Meter.app" instead. The script registers a per-user LaunchAgent and opens Ram Meter immediately. Rerun `enable` with the new path if you move the app. To remove the login entry, run `zsh login-launch.sh disable`. This leaves the app installed and any open instance running.
+
+### Human setup
+
+Open **System Settings → General → Login Items & Extensions**. Under **Open at Login**, click **+**, select the installed **Ram Meter.app**, and click **Add**. To stop auto-launching, select Ram Meter in that list and click **−**. [Apple’s Login Items guide](https://support.apple.com/guide/mac-help/mh15189/mac)
+
 ## What the numbers mean
 
 - **Menu bar RAM** shows the estimated share of installed memory in use. The estimate includes wired and compressed memory and the tag-storage region where macOS reports it. It excludes file cache. Compare it with **Memory Used ÷ Physical Memory** in Activity Monitor. For CPU, compare **System + User**. Ram Meter samples about every two seconds. Activity Monitor has its own refresh setting.

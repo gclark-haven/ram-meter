@@ -18,6 +18,7 @@ Ram Meter shows the last 60 seconds of CPU and RAM use across Docker, Codex, bro
 
 - [Agentic setup](SETUP.md#agentic-setup)
 - [Human setup](SETUP.md#human-setup)
+- [Open Ram Meter at login](SETUP.md#open-ram-meter-at-login)
 
 The download is ad hoc signed and has no Apple notarization. If macOS blocks the first launch, follow the [first launch steps](SETUP.md#if-macos-blocks-the-first-launch).
 
