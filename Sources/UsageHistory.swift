@@ -52,8 +52,12 @@ struct UsageHistory {
                     return Point(time: time, lower: lower, upper: lower + (groups[workload.id]?.cpu ?? 0))
                 }
             case .ram:
-                point = sample.ram.map {
-                    Point(time: time, lower: 0, upper: Double($0[workload.id]?.bytes ?? 0) / Double(1 << 30))
+                point = sample.ram.map { groups in
+                    let gib = Double(1 << 30)
+                    let lower = Workload.allCases.prefix(while: { $0 != workload })
+                        .reduce(0.0) { $0 + Double(groups[$1.id]?.bytes ?? 0) / gib }
+                    return Point(time: time, lower: lower,
+                                 upper: lower + Double(groups[workload.id]?.bytes ?? 0) / gib)
                 }
             }
             if point == nil || segment.last.map({ time - $0.time >= Self.maximumGap }) == true {
@@ -85,7 +89,7 @@ struct UsageHistoryChart: View {
             let ceiling = metric == .cpu ? 1 : max(1, (peak * 1.05).rounded(.up))
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
-                    Text(metric == .cpu ? "Mac CPU by workload" : "RAM footprint by workload")
+                    Text(metric == .cpu ? "Mac CPU by workload" : "Stacked RAM footprints")
                         .font(.caption.weight(.semibold))
                     Spacer()
                     if count < 2 {
@@ -95,7 +99,7 @@ struct UsageHistoryChart: View {
                 }
                 workloadKey
                 Chart {
-                    ForEach(drawOrder, id: \.self) { i in
+                    ForEach(workloads.indices, id: \.self) { i in
                         ForEach(series[i].indices, id: \.self) { j in
                             let segment = series[i][j]
                             ForEach(segment.indices, id: \.self) { k in
@@ -133,15 +137,6 @@ struct UsageHistoryChart: View {
         }
     }
 
-    private var drawOrder: [Int] {
-        var order = Array(workloads.indices)
-        if metric == .ram, let highlighted, let index = workloads.firstIndex(of: highlighted) {
-            order.removeAll { $0 == index }
-            order.append(index)
-        }
-        return order
-    }
-
     private var workloadKey: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Highlight a workload")
@@ -156,7 +151,7 @@ struct UsageHistoryChart: View {
                         HStack(spacing: 6) {
                             Capsule()
                                 .fill(color(workload))
-                                .frame(width: 14, height: metric == .ram ? 3 : 8)
+                                .frame(width: 14, height: 8)
                                 .accessibilityHidden(true)
                             Text(workload.name)
                                 .lineLimit(1)
@@ -186,7 +181,7 @@ struct UsageHistoryChart: View {
     private func chartSummary(count: Int) -> String {
         let scope = metric == .cpu
             ? "CPU load history. Stacked workload shares, including idle."
-            : "RAM usage history. Separate workload footprints in GiB."
+            : "RAM usage history. Stacked workload footprints in GiB. Footprints can overlap."
         let readings = count == 0
             ? "No readings in the last 60 seconds."
             : "\(count) \(count == 1 ? "reading" : "readings") in the last 60 seconds."
@@ -203,18 +198,10 @@ struct UsageHistoryChart: View {
                 .symbolSize(16)
                 .foregroundStyle(color.opacity(dimmed ? 0.25 : 1))
         } else if !isolated {
-            if metric == .cpu {
-                AreaMark(x: .value("Seconds from now", point.time),
+            AreaMark(x: .value("Seconds from now", point.time),
                      yStart: .value("Lower share", start), yEnd: .value("Upper share", end),
                      series: .value("Series", series))
                 .foregroundStyle(color.opacity(dimmed ? 0.14 : selected ? 0.84 : 0.48))
-            }
-            if metric == .ram {
-                LineMark(x: .value("Seconds from now", point.time), y: .value("Share", end),
-                     series: .value("Series", series))
-                .foregroundStyle(color.opacity(dimmed ? 0.22 : 1))
-                .lineStyle(StrokeStyle(lineWidth: selected ? 2.8 : 1.5, lineCap: .round, lineJoin: .round))
-            }
         }
     }
 }

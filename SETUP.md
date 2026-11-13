@@ -34,7 +34,7 @@ This download is ad hoc signed and has no Apple notarization. After trying to op
 Click the ram and select **CPU** or **RAM**. Each chart shows the last 60 seconds. The workload rows use the same colors as the chart.
 
 - **CPU** stacks workload shares of total Mac CPU, including Idle. A gap means Ram Meter could not reconcile the workload readings. **Observed threads** covers the processes Ram Meter can read.
-- **RAM** plots each workload’s process footprint in GiB on its own line. Use the separate whole-Mac readouts above the chart for used and estimated available RAM.
+- **RAM** stacks workload process footprints in GiB. The sum can exceed installed RAM because footprints can overlap. Use the separate whole-Mac readouts above the chart for used and estimated available RAM.
 
 ## See technical stats
 

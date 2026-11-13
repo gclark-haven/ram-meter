@@ -256,7 +256,7 @@ struct Dashboard: View {
                 Divider()
                 processCounts
             } else {
-                Text("Process footprints can overlap.")
+                Text("Stacked footprints can overlap and exceed installed RAM.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
