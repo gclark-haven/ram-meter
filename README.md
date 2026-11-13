@@ -8,6 +8,14 @@ Ram Meter shows the last 60 seconds of CPU and RAM use across Docker, Codex, bro
 
 **[Download the DMG](https://github.com/gclark-haven/ram-meter/releases/latest)** · macOS 14 or later · Apple silicon and Intel
 
+## CPU and RAM charts
+
+| CPU usage by workload | RAM footprint by workload |
+| --- | --- |
+| <img src="Assets/screenshots/chart-cpu.png" width="440" alt="Ram Meter CPU tab with 60 seconds of stacked workload usage and idle capacity"> | <img src="Assets/screenshots/chart-ram.png" width="440" alt="Ram Meter RAM tab with per-workload history in GiB and current used and available memory"> |
+
+## Install
+
 - [Agentic setup](SETUP.md#agentic-setup)
 - [Human setup](SETUP.md#human-setup)
 
